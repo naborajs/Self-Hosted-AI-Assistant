@@ -1,0 +1,35 @@
+version: "3.9"
+services:
+  whatsapp_bridge:
+    build:
+      context: ./whatsapp_bridge
+    ports:
+      - "3000:3000"
+    environment:
+      - WHATSAPP_BRIDGE_HOST=0.0.0.0
+      - WHATSAPP_BRIDGE_PORT=3000
+      - WHATSAPP_BRIDGE_STORAGE=/data/whatsapp_bridge
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      - ./storage/whatsapp_bridge:/data/whatsapp_bridge
+
+  app:
+    build: .
+    depends_on:
+      - whatsapp_bridge
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+      - WHATSAPP_BRIDGE_URL=http://whatsapp_bridge:3000
+      - WHATSAPP_BRIDGE_HOST=whatsapp_bridge
+      - WHATSAPP_BRIDGE_PORT=3000
+      - WHATSAPP_PHONE=${WHATSAPP_PHONE}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
+      - OLLAMA_URL=${OLLAMA_URL}
+      - DATABASE_URL=${DATABASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - ADMIN_USERS=${ADMIN_USERS}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE}

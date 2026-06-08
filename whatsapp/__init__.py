@@ -1,0 +1,1 @@
+"""WhatsApp companion integration package."""

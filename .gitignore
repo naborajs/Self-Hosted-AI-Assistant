@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+assistant.db
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# Ollama
+storage/
+
+# WhatsApp Sessions
+whatsapp_bridge/storage/
+auth_state/
+
+# Node
+node_modules/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
