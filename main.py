@@ -16,6 +16,7 @@ from database.connection import init_db, shutdown_db
 from whatsapp.service import WhatsAppGateway
 from telegram_gateway.bot import TelegramGateway
 from memory.store import MemoryStore
+from ai.manager import AIManager
 
 
 logger = logging.getLogger("local_ai_assistant")
@@ -41,8 +42,9 @@ def create_app() -> FastAPI:
     app.include_router(api_router, prefix="/api")
 
     app.state.memory = MemoryStore(settings)
-    app.state.whatsapp = WhatsAppGateway(settings)
-    app.state.telegram = TelegramGateway(settings, app.state.memory)
+    app.state.ai_manager = AIManager(settings.storage_path)
+    app.state.whatsapp = WhatsAppGateway(settings, app.state.ai_manager)
+    app.state.telegram = TelegramGateway(settings, app.state.memory, app.state.ai_manager)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -51,6 +53,7 @@ def create_app() -> FastAPI:
         logger.info("Starting Local AI Assistant")
         await init_db(settings)
         await app.state.memory.initialize()
+        app.state.ai_manager.initialize()
         await app.state.whatsapp.start()
         await app.state.telegram.start()
         logger.info("Services are ready")

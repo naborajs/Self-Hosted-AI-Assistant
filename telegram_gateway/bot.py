@@ -10,14 +10,16 @@ from config import settings
 from database.repository import create_conversation, get_or_create_user, get_conversation, save_message
 from ai.client import OllamaClient
 from ai.conversation import ConversationContext
+from ai.manager import AIManager
 
 logger = logging.getLogger("local_ai_assistant.telegram")
 
 
 class TelegramGateway:
-    def __init__(self, settings: Any, memory: Any) -> None:
+    def __init__(self, settings: Any, memory: Any, ai_manager: AIManager) -> None:
         self.settings = settings
         self.memory = memory
+        self.ai_manager = ai_manager
         self.bot_token = settings.telegram_bot_token
         self.application = Application.builder().token(self.bot_token).build()
         self.ai_client = OllamaClient()
@@ -59,17 +61,21 @@ class TelegramGateway:
             text = update.message.text
             logger.debug("Telegram message from %s: %s", username, text and (text[:200] + ("..." if len(text) > 200 else "")))
             await save_message(conversation.id, username, "user", text)
-            context_obj = ConversationContext(conversation.id)
-            prompt = await context_obj.build_prompt()
-            prompt += f"\nUser: {text}\nAssistant:"
+            context_obj = ConversationContext(conversation.id, self.ai_manager)
 
-            try:
-                answer = await self.ai_client.generate(prompt)
-                if not answer or not answer.strip():
-                    answer = "I couldn't generate a response. Please try again."
-            except Exception as exc:
-                logger.exception("Ollama generation failed: %s", exc)
-                answer = "I encountered an error processing your request. Please try again."
+            preset_answer = self.ai_manager.match_preset(text)
+            if preset_answer:
+                answer = preset_answer
+            else:
+                prompt = await context_obj.build_prompt(platform="telegram", user_name=username, user_message=text)
+                prompt += f"\nAssistant:"
+                try:
+                    answer = await self.ai_client.generate(prompt)
+                    if not answer or not answer.strip():
+                        answer = "I couldn't generate a response. Please try again."
+                except Exception as exc:
+                    logger.exception("Ollama generation failed: %s", exc)
+                    answer = "I encountered an error processing your request. Please try again."
             
             await save_message(conversation.id, "assistant", "assistant", answer)
             logger.debug("Sending Telegram reply to %s: %s", username, answer and (answer[:200] + ("..." if len(answer) > 200 else "")))

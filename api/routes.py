@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Any, List, Literal
 
 from api.security import authenticate_admin, create_access_token, get_current_user
 from config import settings

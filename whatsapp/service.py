@@ -9,6 +9,7 @@ import httpx
 
 from ai.client import OllamaClient
 from ai.conversation import ConversationContext
+from ai.manager import AIManager
 from config import settings
 from database.repository import create_conversation, get_conversation, get_or_create_user, save_message
 
@@ -16,8 +17,9 @@ logger = logging.getLogger("local_ai_assistant.whatsapp")
 
 
 class WhatsAppGateway:
-    def __init__(self, settings: Any) -> None:
+    def __init__(self, settings: Any, ai_manager: AIManager) -> None:
         self.settings = settings
+        self.ai_manager = ai_manager
         self.base_url = str(settings.whatsapp_bridge_url).rstrip("/")
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
         self.poll_task: asyncio.Task | None = None
@@ -144,19 +146,24 @@ class WhatsAppGateway:
                 conversation = await create_conversation(app_user.id, chat_id, title=item.get("chat_title", chat_id))
 
             await save_message(conversation.id, sender, "user", content, message_type)
-            context = ConversationContext(conversation.id)
-            prompt = await context.build_prompt()
-            prompt += f"\nUser: {content}\nAssistant:"
+            context = ConversationContext(conversation.id, self.ai_manager)
 
-            await self.send_typing(chat_id)
-            try:
-                answer = await self.ai_client.generate(prompt)
-                if not answer or not answer.strip():
-                    answer = "I couldn't generate a response. Please try again."
-            except Exception as exc:
-                logger.exception("Ollama generation failed: %s", exc)
-                answer = "I encountered an error processing your request. Please try again."
-            
+            preset_answer = self.ai_manager.match_preset(content)
+            if preset_answer:
+                answer = preset_answer
+            else:
+                prompt = await context.build_prompt(platform="whatsapp", user_name=sender_name, user_message=content)
+                prompt += f"\nAssistant:"
+
+                await self.send_typing(chat_id)
+                try:
+                    answer = await self.ai_client.generate(prompt)
+                    if not answer or not answer.strip():
+                        answer = "I couldn't generate a response. Please try again."
+                except Exception as exc:
+                    logger.exception("Ollama generation failed: %s", exc)
+                    answer = "I encountered an error processing your request. Please try again."
+
             await save_message(conversation.id, "assistant", "assistant", answer)
             logger.debug("Queueing assistant response to outgoing queue for chat %s", chat_id)
             await self.send_message(chat_id, answer)
