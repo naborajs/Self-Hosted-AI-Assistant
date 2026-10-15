@@ -94,11 +94,11 @@ python main.py
 stop.bat
 ```
 
-## End-to-End Message Flow (Phase 2 Durable Pipeline)
+## End-to-End Message Flow (Phase 2 & Phase 2.1 Durable Pipeline)
 
 1. **User sends WhatsApp message**
    - Message arrives at @whiskeysockets/baileys companion bridge.
-   - Bridge assigns stable fallback hash if ID is missing, validates deduplication, and atomically writes the event to `inbound_queue.json` under an asynchronous lock.
+   - Bridge assigns stable fallback hash if ID is missing, validates deduplication, and atomically writes the event to `inbound_queue.json` under an asynchronous mutex.
 
 2. **Python Backend Long-Polls & Persists**
    - WhatsApp gateway polls `/poll?limit=50` (non-destructive).
@@ -109,51 +109,31 @@ stop.bat
    - Concurrent workers claim pending messages (`RECEIVED` or stale `PROCESSING`).
    - Chat-level serialization guarantees strict FIFO processing within each chat while allowing independent conversations to run concurrently.
 
-4. **Staged AI Response Generation & Delivery**
+4. **Staged AI Response Generation & Outbound Durability**
    - **Stage 1 (Inference)**: AI model generates response and records it in `response_text` with status `RESPONSE_READY`.
-   - **Stage 2 (Delivery)**: User/assistant messages are recorded in conversation history, outbound message is queued to the bridge, and status is marked `COMPLETED`.
-   - If a crash occurs between Stage 1 and Stage 2, restarting the process immediately resumes delivery without repeating LLM inference.
-
-## Health Check
-
-Check system status:
-```
-curl http://127.0.0.1:8000/health
-```
-
-Response:
-```json
-{
-  "backend": true,
-  "ollama": true,
-  "whatsapp": true,
-  "telegram": true,
-  "database": true
-}
-```
-
-## Services and Ports
-
-- **Python Backend**: http://127.0.0.1:8000
-- **WhatsApp Bridge**: http://127.0.0.1:3000
-- **Ollama**: http://127.0.0.1:11434
-- **Database**: ./assistant.db (SQLite)
-- **Storage**: ./storage/
-
-## QR Code Login
-
-On first run, WhatsApp bridge needs pairing:
-
-1. Open browser: http://127.0.0.1:3000/qr-display
-2. Scan QR code with WhatsApp companion app
-3. Bridge will connect automatically
-4. Session is encrypted and stored
+   - **Stage 2 (Outbound Persistence)**:
+     - Checks if assistant message was already saved; skips saving if `message_id` is linked to avoid duplicate conversation records on recovery.
+     - Persists durable `OutboundMessage` in SQLite (`status: PENDING`, `correlation_id: inbound-<id>`).
+     - Queues payload to the outgoing worker and marks inbound record as `COMPLETED`.
+   - **Stage 3 (Dispatch & Delivery Tracking)**:
+     - Outgoing worker marks message as `SENDING` with an active lease.
+     - Upon HTTP 200 from bridge: Marked `SENT` with `sent_at` timestamp.
+     - Upon `httpx.ReadTimeout`: Marked `AMBIGUOUS`, routed to dead-letter queue, and blind retries are halted to prevent duplicate messages.
+     - Upon 5xx / connection error: Re-queued up to `max_attempts` before dead-lettering as `FAILED`.
+     - Upon 4xx client error: Immediately dead-lettered as `FAILED`.
+   - **Crash Recovery**: On startup, interrupted inbound leases are reset, stale outbound leases are recovered to `PENDING`, and unconfirmed outbounds are reconstructed from SQLite without re-running Ollama inference.
 
 ## Database
 
 - **Location**: ./assistant.db
-- **Type**: SQLite with async support
-- **Tables**: Users, Conversations, Messages, MemoryRecords
+- **Type**: SQLite with async support (`aiosqlite`) and WAL mode enabled (`journal_mode = WAL`)
+- **Tables**:
+  - `users`: Registered users and credentials
+  - `conversations`: Chat sessions and metadata
+  - `messages`: Historical conversation messages (deduplicated)
+  - `memory_records`: Long-term memory key-value pairs
+  - `inbound_messages`: Durable inbound messaging queue
+  - `outbound_messages`: Durable outbound response tracking (`PENDING`, `SENDING`, `SENT`, `AMBIGUOUS`, `FAILED`)
 - **Auto-initialized** on first startup
 
 ## Configuration
