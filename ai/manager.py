@@ -37,7 +37,7 @@ DEFAULT_IDENTITY = {
     "developer_name": "Nishant Sarkar",
     "owner_name": "Nishant Sarkar",
     "brand_name": "NS Gamming",
-    "website": "https://nsgamming.xyz",
+    "website": "https://naborajs.me",
     "github": "https://github.com/naborajs",
     "youtube": "https://youtube.com/@Nishant_sarkar",
     "instagram": "https://instagram.com/naborajs",
