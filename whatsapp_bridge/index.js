@@ -22,8 +22,27 @@ app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 
 const BRIDGE_HOST = process.env.WHATSAPP_BRIDGE_HOST || "127.0.0.1";
-const BRIDGE_PORT = Number(process.env.WHATSAPP_BRIDGE_PORT || 3000);
-const STORAGE_PATH = path.resolve(process.env.WHATSAPP_BRIDGE_STORAGE || "./storage/whatsapp_bridge");
+const fsSync = require("fs");
+
+function resolveDefaultStoragePath() {
+  const envStorage = process.env.WHATSAPP_STORAGE_DIR || process.env.WHATSAPP_BRIDGE_STORAGE;
+  if (envStorage) {
+    return path.resolve(envStorage);
+  }
+  const rootStorage = path.resolve(__dirname, "../storage/whatsapp_bridge");
+  const localBridgeStorage = path.resolve(__dirname, "storage/whatsapp_bridge");
+  const localDirectStorage = path.resolve(__dirname, "storage");
+
+  if (fsSync.existsSync(localBridgeStorage)) {
+    return localBridgeStorage;
+  }
+  if (fsSync.existsSync(path.resolve(__dirname, ".."))) {
+    return rootStorage;
+  }
+  return localDirectStorage;
+}
+
+const STORAGE_PATH = resolveDefaultStoragePath();
 const AUTH_DIR = path.join(STORAGE_PATH, "auth_state");
 const ENCRYPTED_AUTH_FILE = path.join(STORAGE_PATH, "auth_state.json.enc");
 const MEDIA_PATH = path.join(STORAGE_PATH, "media");
@@ -77,7 +96,9 @@ let connected = false;
 let messageQueue = [];
 let reconnectTask = null;
 
-const QUEUE_FILE = path.join(STORAGE_PATH, "inbound_queue.json");
+const QUEUE_FILE = process.env.WHATSAPP_INBOUND_QUEUE_PATH
+  ? path.resolve(process.env.WHATSAPP_INBOUND_QUEUE_PATH)
+  : path.join(STORAGE_PATH, "inbound_queue.json");
 
 let queueLock = Promise.resolve();
 function withQueueLock(fn) {
@@ -87,8 +108,8 @@ function withQueueLock(fn) {
 }
 
 async function ensureStorage() {
-  await fs.mkdir(STORAGE_PATH, { recursive: true });
-  await fs.mkdir(MEDIA_PATH, { recursive: true });
+  await fs.mkdir(STORAGE_PATH, { recursive: true, mode: 0o700 });
+  await fs.mkdir(MEDIA_PATH, { recursive: true, mode: 0o700 });
 }
 
 async function saveQueueToFile(messages) {
@@ -642,6 +663,7 @@ module.exports = {
   saveQueueToFile,
   withQueueLock,
   QUEUE_FILE,
+  STORAGE_PATH,
   getQueue: () => messageQueue,
   setQueue: (q) => { messageQueue = q; },
 };
