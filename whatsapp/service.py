@@ -11,17 +11,25 @@ from ai.client import OllamaClient
 from ai.conversation import ConversationContext
 from ai.manager import AIManager
 from config import settings
-from database.models import InboundMessage
+from database.models import InboundMessage, OutboundMessage
 from database.repository import (
     claim_next_inbound_message,
     count_pending_inbound,
     create_conversation,
+    create_or_get_outbound_message,
     get_conversation,
     get_or_create_user,
+    get_outbound_by_inbound_id,
     mark_inbound_completed,
     mark_inbound_failed,
     mark_inbound_response_ready,
+    mark_outbound_ambiguous,
+    mark_outbound_failed,
+    mark_outbound_sending,
+    mark_outbound_sent,
     recover_stale_inbound_leases,
+    recover_stale_outbound_leases,
+    requeue_outbound_retry,
     save_inbound_batch,
     save_message,
 )
@@ -87,7 +95,22 @@ class WhatsAppGateway:
             if recovered:
                 logger.info("Recovered %d interrupted inbox message leases on startup", recovered)
         except Exception as exc:
-            logger.warning("Failed to recover stale leases on startup: %s", exc)
+            logger.warning("Failed to recover stale inbox leases on startup: %s", exc)
+
+        try:
+            stale_outbounds = await recover_stale_outbound_leases(stale_threshold_seconds=60.0)
+            if stale_outbounds:
+                logger.info("Recovered %d interrupted outbound message leases on startup", stale_outbounds)
+        except Exception as exc:
+            logger.warning("Failed to recover stale outbound leases on startup: %s", exc)
+
+        # Reconstruct pending outbound deliveries from SQLite into the outgoing queue
+        try:
+            reconstructed = await self._reconstruct_pending_outbounds()
+            if reconstructed:
+                logger.info("Reconstructed %d pending outbound deliveries from SQLite", reconstructed)
+        except Exception as exc:
+            logger.warning("Failed to reconstruct pending outbounds on startup: %s", exc)
 
         # Start bounded worker pool
         worker_count = getattr(self.settings, "inbox_worker_count", 3)
@@ -171,10 +194,36 @@ class WhatsAppGateway:
         file_url: str | None = None,
         mime_type: str | None = None,
         caption: str | None = None,
-    ) -> None:
+        inbound_id: int | None = None,
+        conversation_id: int | None = None,
+        message_id: int | None = None,
+        outbound_id: int | None = None,
+    ) -> OutboundMessage | None:
+        outbound = None
+        if outbound_id is None:
+            try:
+                outbound = await create_or_get_outbound_message(
+                    chat_id=chat_id,
+                    text=text,
+                    file_url=file_url,
+                    mime_type=mime_type,
+                    caption=caption,
+                    inbound_id=inbound_id,
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    max_attempts=self.max_send_attempts,
+                )
+                if outbound:
+                    outbound_id = outbound.id
+            except Exception as exc:
+                logger.debug("Durable OutboundMessage persistence skipped: %s", exc)
+
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if file_url:
             payload.update({"file_url": file_url, "mime_type": mime_type, "caption": caption})
+        if outbound_id is not None:
+            payload["outbound_id"] = outbound_id
+
         try:
             logger.debug("Queueing outgoing message to bridge: %s", {"chat_id": chat_id, "text": text and (text[:200] + ("..." if len(text) > 200 else ""))})
         except Exception:
@@ -184,6 +233,7 @@ class WhatsAppGateway:
             logger.debug("Outgoing queue size after enqueue: %d", self.outgoing_queue.qsize())
         except Exception:
             pass
+        return outbound
 
     async def _poll_messages(self) -> None:
         consecutive_errors = 0
@@ -351,10 +401,26 @@ class WhatsAppGateway:
             external_id = f"whatsapp:{sender}"
             app_user = await get_or_create_user(external_id, sender_name)
             conversation = await get_conversation(app_user.id, chat_id)
-            if conversation is not None:
-                await save_message(conversation.id, "assistant", "assistant", answer)
+            if conversation is None:
+                conversation = await create_conversation(app_user.id, chat_id, title=chat_id)
 
-            await self.send_message(chat_id, answer)
+            existing_outbound = await get_outbound_by_inbound_id(record.id)
+            assistant_msg_id = None
+            if existing_outbound and existing_outbound.message_id:
+                # Assistant message was already saved prior to an interruption - do not duplicate
+                assistant_msg_id = existing_outbound.message_id
+            elif conversation is not None:
+                assistant_msg = await save_message(conversation.id, "assistant", "assistant", answer)
+                assistant_msg_id = assistant_msg.id
+
+            await self.send_message(
+                chat_id,
+                answer,
+                inbound_id=record.id,
+                conversation_id=conversation.id if conversation else None,
+                message_id=assistant_msg_id,
+                outbound_id=existing_outbound.id if existing_outbound else None,
+            )
             await mark_inbound_completed(record.id)
             logger.debug("Successfully processed inbound message %s for %s", record.external_id, sanitized_chat)
 
@@ -403,6 +469,30 @@ class WhatsAppGateway:
         if len(self.dead_letter_queue) > 100:
             self.dead_letter_queue.pop(0)
 
+    async def _reconstruct_pending_outbounds(self) -> int:
+        from database.connection import get_session
+        from database.models import OutboundMessage
+        from sqlalchemy import select
+        async with get_session() as session:
+            stmt = select(OutboundMessage).where(
+                OutboundMessage.platform == "whatsapp",
+                OutboundMessage.status == "PENDING",
+            ).order_by(OutboundMessage.created_at.asc())
+            result = await session.execute(stmt)
+            pending = result.scalars().all()
+            for record in pending:
+                payload = {
+                    "chat_id": record.chat_id,
+                    "text": record.text,
+                    "file_url": record.file_url,
+                    "mime_type": record.mime_type,
+                    "caption": record.caption,
+                    "outbound_id": record.id,
+                    "_attempts": record.attempt_count,
+                }
+                await self.outgoing_queue.put(payload)
+            return len(pending)
+
     async def _process_outgoing(self) -> None:
         while True:
             try:
@@ -415,13 +505,21 @@ class WhatsAppGateway:
             attempts = item.get("_attempts", 0) + 1
             item["_attempts"] = attempts
             chat_id = item.get("chat_id")
+            outbound_id = item.get("outbound_id")
             sanitized_id = self._sanitize_recipient(chat_id)
 
+            if outbound_id:
+                with contextlib.suppress(Exception):
+                    await mark_outbound_sending(outbound_id, lease_seconds=60.0, attempts=attempts)
+
             if not chat_id:
+                if outbound_id:
+                    with contextlib.suppress(Exception):
+                        await mark_outbound_failed(outbound_id, "Missing chat_id", attempts=attempts)
                 await self._handle_dead_letter(item, "Missing chat_id")
                 continue
 
-            bridge_payload = {k: v for k, v in item.items() if not k.startswith("_")}
+            bridge_payload = {k: v for k, v in item.items() if not k.startswith("_") and k != "outbound_id"}
 
             try:
                 response = await self.client.post(
@@ -431,10 +529,29 @@ class WhatsAppGateway:
                 )
                 response.raise_for_status()
                 logger.debug("Message successfully delivered to %s on attempt %d", sanitized_id, attempts)
+                if outbound_id:
+                    with contextlib.suppress(Exception):
+                        await mark_outbound_sent(outbound_id)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                is_transient = isinstance(exc, (httpx.ConnectError, httpx.TimeoutException))
+                # Check for Ambiguous delivery outcome (ReadTimeout)
+                is_read_timeout = isinstance(exc, httpx.ReadTimeout)
+                if is_read_timeout:
+                    reason = "ReadTimeout: Request was sent to bridge, but response timed out. Delivery outcome is ambiguous."
+                    logger.warning(
+                        "Ambiguous delivery outcome for %s (attempt %d/%d): %s",
+                        sanitized_id, attempts, self.max_send_attempts, reason
+                    )
+                    if outbound_id:
+                        with contextlib.suppress(Exception):
+                            await mark_outbound_ambiguous(outbound_id, reason, attempts=attempts)
+                    await self._handle_dead_letter(item, f"Ambiguous ({type(exc).__name__})")
+                    continue
+
+                is_transient = isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+                if isinstance(exc, httpx.TimeoutException) and not is_read_timeout:
+                    is_transient = True
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (502, 503, 504, 429):
                     is_transient = True
 
@@ -443,10 +560,16 @@ class WhatsAppGateway:
                         "Transient send failure for %s (attempt %d/%d): %s. Re-queueing after delay.",
                         sanitized_id, attempts, self.max_send_attempts, type(exc).__name__
                     )
+                    if outbound_id:
+                        with contextlib.suppress(Exception):
+                            await requeue_outbound_retry(outbound_id, f"{type(exc).__name__}: {exc}", attempts=attempts)
                     await asyncio.sleep(self.retry_delay)
                     await self.outgoing_queue.put(item)
                 else:
                     reason = f"{type(exc).__name__}: {exc}" if is_transient else f"Permanent failure ({type(exc).__name__})"
                     if isinstance(exc, httpx.HTTPStatusError):
                         reason = f"HTTP {exc.response.status_code}"
+                    if outbound_id:
+                        with contextlib.suppress(Exception):
+                            await mark_outbound_failed(outbound_id, reason, attempts=attempts)
                     await self._handle_dead_letter(item, reason)
