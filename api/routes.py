@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from typing import Any, List, Literal
@@ -46,7 +46,7 @@ class AIIdentityModel(BaseModel):
     developer_name: str = Field("Nishant Sarkar", description="Developer name")
     owner_name: str = Field("Nishant Sarkar", description="Owner name")
     brand_name: str = Field("NS Gamming", description="Brand name")
-    website: str = Field("https://nsgamming.xyz", description="Website URL")
+    website: str = Field("https://naborajs.me", description="Website URL")
     github: str = Field("https://github.com/naborajs", description="GitHub URL")
     youtube: str = Field("https://youtube.com/@Nishant_sarkar", description="YouTube URL")
     instagram: str = Field("https://instagram.com/naborajs", description="Instagram URL")
@@ -166,6 +166,15 @@ async def whatsapp_send(
 async def whatsapp_pairing_code(request: Request, current_user: dict = Depends(get_current_user)) -> dict:
     gateway = request.app.state.whatsapp
     return {"pairing_code": gateway.pairing_code}
+
+
+@api_router.get("/whatsapp/qr")
+async def whatsapp_qr(request: Request, current_user: dict = Depends(get_current_user)) -> Response:
+    gateway = request.app.state.whatsapp
+    qr_bytes = await gateway.get_qr()
+    if not qr_bytes:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="QR code not available")
+    return Response(content=qr_bytes, media_type="image/png")
 
 
 @api_router.post("/whatsapp/logout")
