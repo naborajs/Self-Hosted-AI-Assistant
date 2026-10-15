@@ -37,4 +37,7 @@ services:
       - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE}
+    volumes:
+      - ./assistant.db:/app/assistant.db
+      - ./storage:/app/storage
 
