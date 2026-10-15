@@ -16,9 +16,12 @@ assistant.db
 # Ollama
 storage/
 
-# WhatsApp Sessions
+# WhatsApp Sessions & Inbound Queue
 whatsapp_bridge/storage/
+whatsapp_bridge/inbound_queue.json
+whatsapp_bridge/*.tmp
 auth_state/
+*.tmp
 
 # Node
 node_modules/
