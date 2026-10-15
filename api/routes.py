@@ -6,8 +6,17 @@ from pydantic import BaseModel, Field
 from typing import Any, List, Literal
 
 from api.security import authenticate_admin, create_access_token, get_current_user
+from ai.client import OllamaClient
 from config import settings
-from database.repository import get_or_create_user
+from database.repository import (
+    get_or_create_user,
+    get_system_setting,
+    get_user_by_id,
+    get_user_preference,
+    resolve_effective_model,
+    set_system_setting,
+    set_user_preference,
+)
 from memory.store import MemoryStore, get_memory_store
 
 api_router = APIRouter()
@@ -87,6 +96,62 @@ class MemoryRecordModel(BaseModel):
     key: str = Field(..., description="Memory key")
     value: str = Field(..., description="Memory value")
     tags: str | None = Field(None, description="Memory tags")
+
+
+class ModelInfoResponse(BaseModel):
+    name: str
+    size: int
+    modified_at: str
+    digest: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelsListResponse(BaseModel):
+    models: list[ModelInfoResponse]
+    ollama_reachable: bool
+    count: int
+
+
+class ModelConfigResponse(BaseModel):
+    global_default_model: str | None
+    fallback_default_model: str
+    effective_default_model: str | None
+    ollama_healthy: bool
+    allow_user_model_selection: bool
+
+
+class UpdateModelConfigRequest(BaseModel):
+    global_default_model: str | None = None
+
+
+class UserPreferenceResponse(BaseModel):
+    user_id: int
+    preferred_model: str | None = None
+    preferred_language: str | None = None
+    response_style: str | None = None
+    effective_model: str | None = None
+    effective_model_source: str = "none"
+    effective_model_error: str | None = None
+
+
+class UpdateUserPreferenceRequest(BaseModel):
+    preferred_model: str | None = None
+    preferred_language: str | None = None
+    response_style: str | None = None
+
+
+def is_admin_user(current_user: dict) -> bool:
+    username = current_user.get("username", "")
+    allowed = [item.strip() for item in settings.admin_list if item.strip()]
+    return username in allowed
+
+
+def get_ollama_client(request: Request) -> OllamaClient:
+    client = getattr(request.app.state, "ai_client", None)
+    if client is None:
+        client = OllamaClient(settings)
+        request.app.state.ai_client = client
+    return client
 
 
 def get_ai_manager(request: Request) -> Any:
@@ -322,6 +387,231 @@ async def manage_memory(
         record = await memory.save_fact(user.id, key, value, tags)
         return {"id": record.id, "key": record.key, "value": record.value, "tags": record.tags}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action")
+
+
+@api_router.get("/models", response_model=ModelsListResponse)
+async def list_models(
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> ModelsListResponse:
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+    reachable = await client.is_ollama_available()
+    models = await client.get_installed_models(refresh=False)
+    return ModelsListResponse(
+        models=[
+            ModelInfoResponse(
+                name=m.name,
+                size=m.size,
+                modified_at=m.modified_at,
+                digest=m.digest,
+                details=m.details,
+            )
+            for m in models
+        ],
+        ollama_reachable=reachable,
+        count=len(models),
+    )
+
+
+@api_router.post("/models/refresh", response_model=ModelsListResponse)
+async def refresh_models(
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> ModelsListResponse:
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+    reachable = await client.is_ollama_available()
+    models = await client.get_installed_models(refresh=True)
+    return ModelsListResponse(
+        models=[
+            ModelInfoResponse(
+                name=m.name,
+                size=m.size,
+                modified_at=m.modified_at,
+                digest=m.digest,
+                details=m.details,
+            )
+            for m in models
+        ],
+        ollama_reachable=reachable,
+        count=len(models),
+    )
+
+
+@api_router.get("/models/config", response_model=ModelConfigResponse)
+async def get_model_config(
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> ModelConfigResponse:
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+    global_def = await get_system_setting("global_default_model")
+    reachable = await client.is_ollama_available()
+    installed_models = await client.get_installed_models(refresh=False)
+    installed_names = [m.name for m in installed_models]
+
+    effective = None
+    if global_def and await client.is_model_installed(global_def, installed_names):
+        effective = global_def
+    elif await client.is_model_installed(settings.ollama_model, installed_names):
+        effective = settings.ollama_model
+
+    return ModelConfigResponse(
+        global_default_model=global_def,
+        fallback_default_model=settings.ollama_model,
+        effective_default_model=effective,
+        ollama_healthy=reachable,
+        allow_user_model_selection=settings.allow_user_model_selection,
+    )
+
+
+@api_router.post("/models/config")
+async def update_model_config(
+    payload: UpdateModelConfigRequest,
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> dict:
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+    if payload.global_default_model:
+        requested = payload.global_default_model.strip()
+        installed_models = await client.get_installed_models(refresh=True)
+        installed_names = [m.name for m in installed_models]
+        if not await client.is_model_installed(requested, installed_names):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model '{requested}' is not installed in Ollama. Available: {', '.join(installed_names) or 'none'}",
+            )
+        await set_system_setting("global_default_model", requested)
+        return {"status": "updated", "global_default_model": requested}
+    else:
+        await set_system_setting("global_default_model", "")
+        return {"status": "cleared", "global_default_model": None}
+
+
+@api_router.get("/users/{user_id}/preferences", response_model=UserPreferenceResponse)
+async def get_user_preferences_endpoint(
+    user_id: int,
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> UserPreferenceResponse:
+    user = await get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to access user preferences",
+        )
+
+    pref = await get_user_preference(user_id)
+    is_reachable = await client.is_ollama_available()
+    installed_models = await client.get_installed_models(refresh=False)
+    installed_names = [m.name for m in installed_models]
+    eff_model, source, error = await resolve_effective_model(
+        user_id=user_id,
+        installed_model_names=installed_names,
+        default_env_model=settings.ollama_model,
+        ollama_reachable=is_reachable,
+    )
+    return UserPreferenceResponse(
+        user_id=user_id,
+        preferred_model=pref.preferred_model if pref else None,
+        preferred_language=pref.preferred_language if pref else None,
+        response_style=pref.response_style if pref else None,
+        effective_model=eff_model,
+        effective_model_source=source,
+        effective_model_error=error,
+    )
+
+
+@api_router.put("/users/{user_id}/preferences", response_model=UserPreferenceResponse)
+async def update_user_preferences_endpoint(
+    user_id: int,
+    payload: UpdateUserPreferenceRequest,
+    current_user: dict = Depends(get_current_user),
+    client: OllamaClient = Depends(get_ollama_client),
+) -> UserPreferenceResponse:
+    user = await get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if not is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to modify user preferences",
+        )
+
+    # Validate response_style
+    clear_style = False
+    valid_style = None
+    if payload.response_style is not None:
+        style_clean = payload.response_style.strip().lower()
+        if style_clean in ("", "null", "none"):
+            clear_style = True
+        elif style_clean in ("concise", "detailed"):
+            valid_style = style_clean
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid response_style. Must be 'concise', 'detailed', or null/empty.",
+            )
+
+    # Validate preferred_model
+    clear_model = False
+    valid_model = None
+    if payload.preferred_model is not None:
+        model_clean = payload.preferred_model.strip()
+        if model_clean in ("", "null", "none"):
+            clear_model = True
+        else:
+            installed_models = await client.get_installed_models(refresh=True)
+            installed_names = [m.name for m in installed_models]
+            if not await client.is_model_installed(model_clean, installed_names):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Model '{model_clean}' is not installed in Ollama. Available: {', '.join(installed_names) or 'none'}",
+                )
+            valid_model = model_clean
+
+    # Validate preferred_language
+    clear_lang = False
+    valid_lang = None
+    if payload.preferred_language is not None:
+        lang_clean = payload.preferred_language.strip()
+        if lang_clean in ("", "null", "none"):
+            clear_lang = True
+        else:
+            valid_lang = lang_clean
+
+    pref = await set_user_preference(
+        user_id=user_id,
+        preferred_model=valid_model,
+        clear_model=clear_model,
+        preferred_language=valid_lang,
+        clear_language=clear_lang,
+        response_style=valid_style,
+        clear_style=clear_style,
+    )
+
+    installed_models = await client.get_installed_models(refresh=False)
+    installed_names = [m.name for m in installed_models]
+    eff_model, source, error = await resolve_effective_model(
+        user_id=user_id,
+        installed_model_names=installed_names,
+        default_env_model=settings.ollama_model,
+    )
+    return UserPreferenceResponse(
+        user_id=user_id,
+        preferred_model=pref.preferred_model,
+        preferred_language=pref.preferred_language,
+        response_style=pref.response_style,
+        effective_model=eff_model,
+        effective_model_source=source,
+        effective_model_error=error,
+    )
 
 
 @api_router.get("/health")

@@ -22,6 +22,9 @@ class User(Base):
     conversations: Mapped[list["Conversation"]] = relationship(
         "Conversation", back_populates="user", cascade="all, delete-orphan"
     )
+    preferences = relationship(
+        "UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -119,3 +122,25 @@ class OutboundMessage(Base):
     __table_args__ = (
         Index("ix_outbound_chat_status", "chat_id", "status"),
     )
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False, index=True)
+    preferred_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    preferred_language: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    response_style: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    user: Mapped[User] = relationship("User", back_populates="preferences")
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

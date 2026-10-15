@@ -20,6 +20,7 @@ from database.repository import (
     get_conversation,
     get_or_create_user,
     get_outbound_by_inbound_id,
+    get_user_preference,
     mark_inbound_completed,
     mark_inbound_failed,
     mark_inbound_response_ready,
@@ -30,9 +31,11 @@ from database.repository import (
     recover_stale_inbound_leases,
     recover_stale_outbound_leases,
     requeue_outbound_retry,
+    resolve_effective_model,
     save_inbound_batch,
     save_message,
 )
+from ai.commands import handle_user_command
 
 logger = logging.getLogger("local_ai_assistant.whatsapp")
 
@@ -380,19 +383,68 @@ class WhatsAppGateway:
                     conversation = await create_conversation(app_user.id, chat_id, title=chat_id)
 
                 await save_message(conversation.id, sender, "user", content, message_type)
-                context = ConversationContext(conversation.id, self.ai_manager)
 
-                preset_answer = self.ai_manager.match_preset(content)
-                if preset_answer:
-                    answer = preset_answer
+                # 1. Command Interception (/models, /model, /language, /style)
+                is_command, command_reply = await handle_user_command(
+                    app_user, content, self.ai_client, self.settings
+                )
+                if is_command:
+                    answer = command_reply or ""
                 else:
-                    prompt = await context.build_prompt(platform="whatsapp", user_name=sender_name, user_message=content)
-                    prompt += "\nAssistant:"
+                    # 2. Preset Rule Matching
+                    preset_answer = self.ai_manager.match_preset(content)
+                    if preset_answer:
+                        answer = preset_answer
+                    else:
+                        # 3. Model Resolution & Personalized Inference
+                        pref = await get_user_preference(app_user.id)
+                        pref_lang = pref.preferred_language if pref else None
+                        pref_style = pref.response_style if pref else None
 
-                    await self.send_typing(chat_id)
-                    answer = await self.ai_client.generate(prompt)
-                    if not answer or not answer.strip():
-                        raise ValueError("Empty response received from AI model")
+                        model_names = []
+                        is_reachable = True
+                        try:
+                            installed_models = await self.ai_client.get_installed_models()
+                            if isinstance(installed_models, (list, tuple)):
+                                model_names = [m.name for m in installed_models if hasattr(m, "name")]
+                                if not model_names:
+                                    avail_result = await self.ai_client.is_ollama_available()
+                                    is_reachable = bool(avail_result) if isinstance(avail_result, bool) else True
+                            else:
+                                model_names = [getattr(self.settings, "ollama_model", "qwen3:8b")]
+                        except Exception:
+                            is_reachable = False
+
+                        effective_model, source, model_error = await resolve_effective_model(
+                            app_user.id,
+                            model_names,
+                            default_env_model=getattr(self.settings, "ollama_model", "qwen3:8b"),
+                            ollama_reachable=is_reachable,
+                        )
+
+                        if model_error:
+                            answer = f"⚠️ {model_error}"
+                        else:
+                            context = ConversationContext(conversation.id, self.ai_manager)
+                            prompt = await context.build_prompt(
+                                platform="whatsapp",
+                                user_name=sender_name,
+                                user_message=content,
+                                preferred_language=pref_lang,
+                                response_style=pref_style,
+                            )
+                            prompt += "\nAssistant:"
+
+                            await self.send_typing(chat_id)
+                            try:
+                                answer = await self.ai_client.generate(prompt, model=effective_model)
+                            except TypeError as te:
+                                if "unexpected keyword argument 'model'" in str(te) or "got an unexpected keyword argument" in str(te):
+                                    answer = await self.ai_client.generate(prompt)
+                                else:
+                                    raise
+                            if not answer or not answer.strip():
+                                raise ValueError("Empty response received from AI model")
 
                 # Durably persist generated answer before queuing delivery
                 await mark_inbound_response_ready(record.id, answer)

@@ -208,6 +208,48 @@ Edit `.env` to customize:
 **POST /api/memory/save**
 - Save memory record
 
+### Phase 3: Adaptive Model Selection & Personalization Endpoints
+
+**GET /api/models**
+- Admin only. Return list of installed Ollama models with size, modified_at, and reachability.
+
+**POST /api/models/refresh**
+- Admin only. Force refresh model cache against Ollama and return updated list.
+
+**GET /api/models/config**
+- Admin only. Return global default model configuration and effective default.
+
+**POST /api/models/config**
+- Admin only. Update global default model in SQLite `system_settings` (validates model exists).
+
+**GET /api/users/{user_id}/preferences**
+- Admin only. Get user preferences (`preferred_model`, `preferred_language`, `response_style`) and resolved effective model.
+
+**PUT /api/users/{user_id}/preferences**
+- Admin only. Update user personalization preferences.
+
+## Interactive Messaging Commands (WhatsApp & Telegram)
+
+| Command | Arguments | Authorization | Description |
+|---|---|---|---|
+| `/models` | None | Anyone | List installed Ollama models with sizes and parameter counts |
+| `/model` | None | Anyone | Show active model, preference, and resolution source |
+| `/model` | `<model_name>` | Admin (or anyone if `ALLOW_USER_MODEL_SELECTION=true`) | Switch active model to an installed Ollama model |
+| `/model` | `default` / `reset` | Anyone | Reset model preference to use system default |
+| `/language` | `<language>` | Anyone | Set preferred response language (e.g. `/language Spanish`) |
+| `/language` | `default` / `reset` | Anyone | Reset response language to default |
+| `/style` | `concise` / `detailed` / `normal` | Anyone | Set response style |
+| `/style` | `default` / `reset` | Anyone | Reset response style to normal |
+
+### Model Precedence Order & Safety Guarantees
+1. **User Preference** (`user_preferences.preferred_model`): Highest priority if set.
+2. **Admin Global Default** (`system_settings.global_default_model`): Persisted server-wide setting.
+3. **Configured Environment Default** (`OLLAMA_MODEL` in `.env`): Fallback default.
+
+**Strict Non-Silent Fallback Rule**:
+If a selected model is uninstalled or missing from the host machine, the system will **never** silently fall back to another model. It produces an explicit diagnostic notification explaining that the requested model is missing.
+All models must be installed on the host machine using `ollama pull <name>`.
+
 ## Next Steps
 
 1. Configure .env with your settings

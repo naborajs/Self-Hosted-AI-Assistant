@@ -12,7 +12,9 @@ from .models import (
     MemoryRecord,
     Message,
     OutboundMessage,
+    SystemSetting,
     User,
+    UserPreference,
 )
 
 
@@ -41,6 +43,12 @@ async def create_user(external_id: str, display_name: str, email: str | None = N
 async def get_user_by_external_id(external_id: str) -> User | None:
     async with get_session() as session:
         result = await session.execute(select(User).where(User.external_id == external_id))
+        return result.scalars().first()
+
+
+async def get_user_by_id(user_id: int) -> User | None:
+    async with get_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
         return result.scalars().first()
 
 
@@ -701,3 +709,167 @@ async def count_pending_outbound(platform: str = "whatsapp") -> int:
             )
         )
         return result.scalar() or 0
+
+
+# ============================================================================
+# Phase 3: Adaptive Model Selection & User Preferences
+# ============================================================================
+
+async def get_user_preference(user_id: int) -> UserPreference | None:
+    """Retrieve the preference record for a given user."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        )
+        return result.scalars().first()
+
+
+async def set_user_preference(
+    user_id: int,
+    preferred_model: str | None = None,
+    preferred_language: str | None = None,
+    response_style: str | None = None,
+    clear_model: bool = False,
+    clear_language: bool = False,
+    clear_style: bool = False,
+) -> UserPreference:
+    """Create or update user personalization preferences with strict field isolation."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        )
+        pref = result.scalars().first()
+        if not pref:
+            pref = UserPreference(
+                user_id=user_id,
+                preferred_model=None if clear_model else (preferred_model.strip() if preferred_model else None),
+                preferred_language=None if clear_language else (preferred_language.strip() if preferred_language else None),
+                response_style=None if clear_style else (response_style.strip().lower() if response_style else None),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(pref)
+        else:
+            if clear_model:
+                pref.preferred_model = None
+            elif preferred_model is not None:
+                pref.preferred_model = preferred_model.strip()
+
+            if clear_language:
+                pref.preferred_language = None
+            elif preferred_language is not None:
+                pref.preferred_language = preferred_language.strip()
+
+            if clear_style:
+                pref.response_style = None
+            elif response_style is not None:
+                pref.response_style = response_style.strip().lower()
+
+            pref.updated_at = now
+
+        try:
+            await session.commit()
+            await session.refresh(pref)
+            return pref
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def get_system_setting(key: str, default: str | None = None) -> str | None:
+    """Retrieve a global system configuration setting from SQLite."""
+    async with get_session() as session:
+        result = await session.execute(
+            select(SystemSetting.value).where(SystemSetting.key == key)
+        )
+        val = result.scalar_one_or_none()
+        return val if val is not None else default
+
+
+async def set_system_setting(key: str, value: str) -> None:
+    """Create or update a global system configuration setting in SQLite."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        result = await session.execute(
+            select(SystemSetting).where(SystemSetting.key == key)
+        )
+        setting = result.scalars().first()
+        if setting:
+            setting.value = value
+            setting.updated_at = now
+        else:
+            setting = SystemSetting(key=key, value=value, updated_at=now)
+            session.add(setting)
+        await session.commit()
+
+
+async def resolve_effective_model(
+    user_id: int | None,
+    installed_model_names: list[str] | set[str] | None,
+    default_env_model: str | None = None,
+    ollama_reachable: bool = True,
+) -> tuple[str | None, str, str | None]:
+    """Resolve the effective model for a user strictly adhering to precedence order:
+    1. User's saved model preference (if set).
+    2. Persisted admin default setting (if set).
+    3. Configured environment setting (OLLAMA_MODEL).
+
+    Crucial rules:
+    - If the first applicable selection is missing, unavailable, or uninstalled,
+      report the problem rather than silently choosing a lower-precedence model.
+    - If Ollama is unreachable and no verified cached inventory exists, distinguish
+      service unavailability from a confirmed missing model.
+    - Do not represent an unverified model as confirmed installed.
+    - Never automatically select an arbitrary model or download/substitute models.
+
+    Returns: (effective_model, source, error_detail)
+    """
+    installed_set = set(installed_model_names) if installed_model_names else set()
+
+    unreachable_diagnostic = (
+        "Ollama service is currently unreachable and model availability cannot be verified. "
+        "Please ensure Ollama is running."
+    )
+
+    # 1. User Preference
+    if user_id is not None:
+        pref = await get_user_preference(user_id)
+        if pref and pref.preferred_model:
+            selected = pref.preferred_model
+            if selected in installed_set:
+                return selected, "user_preference", None
+            if not ollama_reachable and not installed_set:
+                return None, "user_preference", unreachable_diagnostic
+            return (
+                None,
+                "user_preference",
+                f"Selected model '{selected}' is not installed in Ollama. Please choose an available model with /model or install it.",
+            )
+
+    # 2. Persisted Admin Default
+    admin_default = await get_system_setting("global_default_model")
+    if admin_default:
+        if admin_default in installed_set:
+            return admin_default, "admin_default", None
+        if not ollama_reachable and not installed_set:
+            return None, "admin_default", unreachable_diagnostic
+        return (
+            None,
+            "admin_default",
+            f"Configured admin default model '{admin_default}' is not installed in Ollama.",
+        )
+
+    # 3. Legacy Environment Default (OLLAMA_MODEL)
+    if default_env_model:
+        if default_env_model in installed_set:
+            return default_env_model, "environment_default", None
+        if not ollama_reachable and not installed_set:
+            return None, "environment_default", unreachable_diagnostic
+        return (
+            None,
+            "environment_default",
+            f"Configured default model '{default_env_model}' is not installed in Ollama.",
+        )
+
+    return None, "none", "No model configured or selected. Please select an available model with /model <name>."

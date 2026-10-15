@@ -108,8 +108,31 @@ Add or customize these settings in your `.env` file:
 | `INBOX_LEASE_TIMEOUT` | `120.0` | Seconds before a stale `PROCESSING` lease can be reclaimed |
 | `INBOX_POLL_INTERVAL` | `1.0` | Interval in seconds between bridge poll requests |
 | `INBOX_MAX_PENDING` | `200` | Backpressure threshold for pending inbound messages |
+| `OLLAMA_MODEL_CACHE_TTL` | `60.0` | Seconds to cache installed Ollama model list |
+| `OLLAMA_MAX_CONCURRENCY` | `3` | Maximum simultaneous active Ollama inferences |
+| `ALLOW_USER_MODEL_SELECTION` | `false` | When false, only admins can switch models via `/model` |
 
 ---
+
+## Interactive In-Chat Commands
+
+Users can interact with the assistant directly via WhatsApp using specialized commands:
+
+- `/models`: Lists all installed Ollama models discovered dynamically via `GET /api/tags` on the host machine.
+- `/model`: Displays your active effective model, user preference, and resolution source.
+- `/model <model_name>`: Switches your active model (e.g. `/model llama3:8b`). Requires administrator permissions unless `ALLOW_USER_MODEL_SELECTION=true`.
+- `/model default` or `/model reset`: Clears your user model preference, reverting to the admin or server default.
+- `/language <language>`: Sets your personal language preference (e.g. `/language Spanish`).
+- `/language default`: Clears language preference.
+- `/style <concise|detailed|normal>`: Customizes reply brevity and style.
+- `/style default`: Resets reply style to normal.
+
+### Model Precedence Order
+1. **User Preference** (`user_preferences.preferred_model`)
+2. **Admin Global Default** (`system_settings.global_default_model`)
+3. **Configured Environment Default** (`OLLAMA_MODEL`)
+
+**Explicit Error Guarantee**: If a selected model is missing or uninstalled, the assistant responds with an explicit error notification (`⚠️ Selected model '...' is not installed in Ollama`) and refuses to silently downgrade to an unintended model.
 
 ## Docker Volume Mounts
 
@@ -182,7 +205,7 @@ WHERE status IN ('AMBIGUOUS', 'FAILED');
 
 Run the complete regression test suite:
 ```bash
-# Python durability and regression tests (51 tests)
+# Python adaptive models, durability, and regression tests (73 tests)
 python -m pytest -v -W ignore
 
 # Node.js bridge security & queue tests

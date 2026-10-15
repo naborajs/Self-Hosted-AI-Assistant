@@ -17,6 +17,7 @@ from whatsapp.service import WhatsAppGateway
 from telegram_gateway.bot import TelegramGateway
 from memory.store import MemoryStore
 from ai.manager import AIManager
+from ai.client import OllamaClient
 
 
 logger = logging.getLogger("local_ai_assistant")
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
 
     app.state.memory = MemoryStore(settings)
     app.state.ai_manager = AIManager(settings.storage_path)
+    app.state.ai_client = OllamaClient(settings)
     app.state.whatsapp = WhatsAppGateway(settings, app.state.ai_manager)
     app.state.telegram = TelegramGateway(settings, app.state.memory, app.state.ai_manager)
 

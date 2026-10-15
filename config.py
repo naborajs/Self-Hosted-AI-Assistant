@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     inbox_poll_interval: float = Field(1.0, env="INBOX_POLL_INTERVAL")
     inbox_max_pending: int = Field(200, env="INBOX_MAX_PENDING")
 
+    # Phase 3: Adaptive Model Selection & Concurrency Configuration
+    ollama_model_cache_ttl: float = Field(60.0, env="OLLAMA_MODEL_CACHE_TTL")
+    ollama_max_concurrency: int = Field(3, env="OLLAMA_MAX_CONCURRENCY")
+    allow_user_model_selection: bool = Field(False, env="ALLOW_USER_MODEL_SELECTION")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

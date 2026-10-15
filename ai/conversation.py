@@ -26,12 +26,36 @@ class ConversationContext:
     async def append_assistant_message(self, content: str) -> None:
         await save_message(self.conversation_id, "assistant", "assistant", content)
 
-    async def build_prompt(self, platform: str, user_name: str, user_message: str) -> str:
+    async def build_prompt(
+        self,
+        platform: str,
+        user_name: str,
+        user_message: str,
+        preferred_language: str | None = None,
+        response_style: str | None = None,
+    ) -> str:
         system_context = self.ai_manager.build_system_context(platform=platform, user_name=user_name)
         knowledge = self.ai_manager.search_knowledge(user_message)
         history = await self.load_history()
 
         lines = [f"System: {system_context}"]
+
+        # Safe presentation personalization without altering core security rules
+        prefs_lines: list[str] = []
+        if preferred_language and preferred_language.strip():
+            lang = preferred_language.strip()
+            prefs_lines.append(f"- Please reply in {lang}.")
+        if response_style:
+            style = response_style.strip().lower()
+            if style == "concise":
+                prefs_lines.append("- Please keep responses concise, direct, and to the point.")
+            elif style == "detailed":
+                prefs_lines.append("- Please provide comprehensive, detailed explanations with in-depth analysis.")
+
+        if prefs_lines:
+            lines.append("User presentation preferences:")
+            lines.extend(prefs_lines)
+
         if knowledge:
             lines.append("Knowledge snippets:")
             for snippet in knowledge:
