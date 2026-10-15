@@ -56,6 +56,7 @@ echo.
 echo ===============================================
 echo Services Started:
 echo - WhatsApp Bridge: http://127.0.0.1:3000
+echo - WhatsApp Pairing: http://127.0.0.1:3000/qr-display
 echo - Python Backend: http://127.0.0.1:8000
 echo - API Health: GET http://127.0.0.1:8000/api/health
 echo ===============================================
