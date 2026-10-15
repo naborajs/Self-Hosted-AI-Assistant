@@ -44,6 +44,16 @@ function constantTimeCompare(a, b) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function isLocalLoopbackRequest(req) {
+  const remoteIp = req.socket?.remoteAddress || req.connection?.remoteAddress || req.ip;
+  if (!remoteIp) return false;
+  return (
+    remoteIp === "127.0.0.1" ||
+    remoteIp === "::1" ||
+    remoteIp === "::ffff:127.0.0.1"
+  );
+}
+
 function requireBridgeAuth(req, res, next) {
   if (!BRIDGE_SECRET) {
     console.error("[bridge] Request rejected: WHATSAPP_BRIDGE_SECRET is not configured on the bridge.");
@@ -51,11 +61,11 @@ function requireBridgeAuth(req, res, next) {
   }
 
   const headerSecret = req.headers["x-bridge-secret"] || (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null);
-  const querySecret = req.path === "/qr" ? req.query.secret : null;
-  const provided = headerSecret || querySecret;
 
-  if (!provided || !constantTimeCompare(provided, BRIDGE_SECRET)) {
-    return res.status(401).json({ error: "Unauthorized: Invalid or missing bridge secret" });
+  if (!headerSecret || !constantTimeCompare(headerSecret, BRIDGE_SECRET)) {
+    return res.status(401).json({
+      error: "Unauthorized: Invalid or missing bridge secret. Operational and programmatic endpoints require X-Bridge-Secret header. For local browser pairing, visit /qr-display on localhost.",
+    });
   }
   next();
 }
@@ -67,10 +77,45 @@ let connected = false;
 let messageQueue = [];
 let reconnectTask = null;
 
+const QUEUE_FILE = path.join(STORAGE_PATH, "inbound_queue.json");
+
+let queueLock = Promise.resolve();
+function withQueueLock(fn) {
+  const result = queueLock.then(fn, fn);
+  queueLock = result.catch(() => {});
+  return result;
+}
+
 async function ensureStorage() {
   await fs.mkdir(STORAGE_PATH, { recursive: true });
   await fs.mkdir(MEDIA_PATH, { recursive: true });
 }
+
+async function saveQueueToFile(messages) {
+  await ensureStorage();
+  const tmpFile = `${QUEUE_FILE}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  const data = JSON.stringify({ version: 1, messages }, null, 2);
+  await fs.writeFile(tmpFile, data, { encoding: "utf8", mode: 0o600 });
+  await fs.rename(tmpFile, QUEUE_FILE);
+}
+
+async function loadInboundQueue() {
+  try {
+    await ensureStorage();
+    const data = await fs.readFile(QUEUE_FILE, "utf8");
+    const parsed = JSON.parse(data);
+    if (Array.isArray(parsed.messages)) {
+      messageQueue = parsed.messages;
+      console.log(`[bridge] Loaded ${messageQueue.length} pending messages from durable queue.`);
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[bridge] Failed to load durable queue:", err.message);
+    }
+  }
+}
+
+ensureStorage().then(loadInboundQueue).catch((err) => console.error("[bridge] Storage init error:", err.message));
 
 function encryptStateBuffer(buffer) {
   const iv = crypto.randomBytes(12);
@@ -262,7 +307,7 @@ async function handleIncomingMessages(upsert) {
       continue;
     }
     if (msg.key && msg.key.fromMe) {
-      console.log('[bridge] messages.upsert ignored: fromMe=true', msg.key.id);
+      console.log('[bridge] messages.upsert ignored: fromMe=true', msg.key?.id);
       continue;
     }
 
@@ -274,28 +319,43 @@ async function handleIncomingMessages(upsert) {
       mediaUrl = await persistMedia(messageType, msg.message[messageType]);
     }
 
-    const sender = msg.key.participant || msg.key.remoteJid;
+    const sender = msg.key?.participant || msg.key?.remoteJid;
     const senderName = msg.pushName || sender;
 
+    let messageId = msg.key?.id;
+    if (!messageId || typeof messageId !== "string" || !messageId.trim()) {
+      const hashInput = `${msg.key?.remoteJid || ""}-${msg.messageTimestamp || Date.now()}-${content || ""}`;
+      messageId = "fb_" + crypto.createHash("sha256").update(hashInput).digest("hex").slice(0, 24);
+    }
+
     try {
-      console.log('[bridge] incoming message details:', JSON.stringify({ message_id: msg.key?.id, sender, sender_name: senderName, chat_id: msg.key?.remoteJid, message_type: messageType, content: content ? (content.length>200? content.slice(0,200)+'...': content) : null }));
+      console.log('[bridge] incoming message details:', JSON.stringify({ message_id: messageId, sender, sender_name: senderName, chat_id: msg.key?.remoteJid, message_type: messageType, content: content ? (content.length>200? content.slice(0,200)+'...': content) : null }));
     } catch (e) {
       console.log('[bridge] incoming message details');
     }
 
     const event = {
-      message_id: msg.key.id,
-      chat_id: msg.key.remoteJid,
+      message_id: messageId,
+      chat_id: msg.key?.remoteJid,
       sender,
       sender_name: senderName,
       content,
       message_type: messageType,
       timestamp: msg.messageTimestamp || Date.now(),
       media_url: mediaUrl,
-      from_group: msg.key.remoteJid?.endsWith("@g.us") || false,
+      from_group: msg.key?.remoteJid?.endsWith("@g.us") || false,
     };
-    messageQueue.push(event);
-    console.log('[bridge] message queued, queue_size=', messageQueue.length, 'message_id=', msg.key.id);
+
+    await withQueueLock(async () => {
+      const exists = messageQueue.some((m) => m.message_id === messageId);
+      if (exists) {
+        console.log('[bridge] Duplicate message ignored:', messageId);
+        return;
+      }
+      messageQueue.push(event);
+      await saveQueueToFile(messageQueue);
+      console.log('[bridge] message queued durably, queue_size=', messageQueue.length, 'message_id=', messageId);
+    });
   }
 }
 
@@ -411,13 +471,86 @@ app.get("/qr", requireBridgeAuth, async (req, res) => {
   }
 });
 
-app.get("/poll", requireBridgeAuth, (req, res) => {
+app.get("/qr-display", async (req, res) => {
+  if (!isLocalLoopbackRequest(req)) {
+    return res.status(403).json({ error: "Forbidden: Local pairing display is restricted to loopback connections" });
+  }
+
+  const host = req.headers.host || "";
+  const isLocalHost = host.startsWith("localhost") || host.startsWith("127.0.0.1") || host.startsWith("[::1]");
+  if (!isLocalHost) {
+    return res.status(403).json({ error: "Forbidden: Invalid Host header" });
+  }
+
+  const secFetchSite = req.headers["sec-fetch-site"];
+  if (secFetchSite && !["same-origin", "none", "same-site"].includes(secFetchSite)) {
+    return res.status(403).json({ error: "Forbidden: Cross-site access not permitted" });
+  }
+
+  if (connected) {
+    return res.type("html").send(`<!DOCTYPE html>
+<html>
+<head><title>WhatsApp Connected - EDITH</title><style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.card{background:#1e293b;padding:2.5rem;border-radius:12px;text-align:center;max-width:400px;box-shadow:0 10px 25px rgba(0,0,0,0.5);}.ok{color:#4ade80;font-size:3rem;margin-bottom:0.5rem;}h2{margin:0.5rem 0;}p{color:#94a3b8;}</style></head>
+<body><div class="card"><div class="ok">&#x2714;</div><h2>WhatsApp is Connected</h2><p>Your companion session is active and ready.</p></div></body>
+</html>`);
+  }
+
+  if (!currentQr) {
+    return res.type("html").send(`<!DOCTYPE html>
+<html>
+<head><title>WhatsApp Pairing - EDITH</title><meta http-equiv="refresh" content="3"><style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.card{background:#1e293b;padding:2.5rem;border-radius:12px;text-align:center;max-width:420px;box-shadow:0 10px 25px rgba(0,0,0,0.5);}h2{color:#38bdf8;margin-top:0;}p{color:#94a3b8;font-size:0.9rem;}</style></head>
+<body><div class="card"><h2>Initializing WhatsApp...</h2><p>Waiting for pairing QR code from WhatsApp socket. Page refreshes automatically every 3 seconds.</p></div></body>
+</html>`);
+  }
+
   try {
-    console.log('[bridge] /poll requested - queue_size=', messageQueue.length);
-  } catch (e) {}
-  const items = [...messageQueue];
-  messageQueue = [];
-  res.json({ messages: items });
+    const qrDataUrl = await qrcode.toDataURL(currentQr, { width: 300, margin: 2 });
+    return res.type("html").send(`<!DOCTYPE html>
+<html>
+<head><title>WhatsApp Companion Pairing - EDITH</title><meta http-equiv="refresh" content="20"><style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.card{background:#1e293b;padding:2rem;border-radius:12px;text-align:center;max-width:440px;box-shadow:0 10px 25px rgba(0,0,0,0.5);}h2{color:#38bdf8;margin:0 0 0.5rem 0;font-size:1.3rem;}ol{color:#cbd5e1;text-align:left;font-size:0.85rem;line-height:1.5;margin:1rem 0;padding-left:1.5rem;}img{background:#fff;padding:10px;border-radius:8px;margin:0.5rem 0;display:inline-block;}.footer{font-size:0.75rem;color:#64748b;margin-top:1rem;}</style></head>
+<body><div class="card"><h2>WhatsApp Companion Pairing</h2><ol><li>Open WhatsApp on your phone</li><li>Tap Menu or Settings &gt; Linked Devices</li><li>Tap Link a Device and scan the QR code below</li></ol><img src="${qrDataUrl}" alt="WhatsApp QR Code" /><div class="footer">Local loopback pairing interface (no secrets in URL). Refreshes every 20 seconds.</div></div></body>
+</html>`);
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to render QR code image" });
+  }
+});
+
+app.get("/poll", requireBridgeAuth, async (req, res) => {
+  await withQueueLock(async () => {
+    try {
+      console.log('[bridge] /poll requested - queue_size=', messageQueue.length);
+    } catch (e) {}
+    const limitParam = parseInt(req.query.limit, 10);
+    const limit = (!isNaN(limitParam) && limitParam > 0) ? Math.min(limitParam, 500) : 50;
+    const items = messageQueue.slice(0, limit);
+    res.json({ messages: items, pending_count: messageQueue.length });
+  });
+});
+
+app.post("/ack", requireBridgeAuth, async (req, res) => {
+  await withQueueLock(async () => {
+    const rawIds = req.body?.message_ids !== undefined ? req.body.message_ids : req.body?.message_id;
+    if (rawIds === undefined || rawIds === null) {
+      return res.status(400).json({ error: "Invalid payload: message_ids array or message_id string is required" });
+    }
+    const idsToAck = Array.isArray(rawIds) ? rawIds : [rawIds];
+    if (idsToAck.length === 0 || !idsToAck.every((id) => typeof id === "string" && id.trim())) {
+      return res.status(400).json({ error: "Invalid payload: message_ids must be a non-empty array of valid strings" });
+    }
+
+    const idSet = new Set(idsToAck);
+    const originalCount = messageQueue.length;
+    messageQueue = messageQueue.filter((m) => !idSet.has(m.message_id));
+    const acknowledgedCount = originalCount - messageQueue.length;
+
+    await saveQueueToFile(messageQueue);
+    console.log(`[bridge] /ack processed: ${acknowledgedCount} acknowledged, ${messageQueue.length} pending.`);
+    res.json({
+      status: "acknowledged",
+      acknowledged_count: acknowledgedCount,
+      pending_count: messageQueue.length,
+    });
+  });
 });
 
 app.post("/send-message", requireBridgeAuth, async (req, res) => {
@@ -493,7 +626,22 @@ app.get("/media/:fileName", requireBridgeAuth, async (req, res) => {
   }
 });
 
-app.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
-  console.log(`WhatsApp bridge listening on http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
-  startSocket().catch((error) => console.error("Failed to start WhatsApp socket:", error.message));
-});
+if (require.main === module) {
+  app.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
+    console.log(`WhatsApp bridge listening on http://${BRIDGE_HOST}:${BRIDGE_PORT}`);
+    startSocket().catch((error) => console.error("Failed to start WhatsApp socket:", error.message));
+  });
+}
+
+module.exports = {
+  app,
+  requireBridgeAuth,
+  isLocalLoopbackRequest,
+  handleIncomingMessages,
+  loadInboundQueue,
+  saveQueueToFile,
+  withQueueLock,
+  QUEUE_FILE,
+  getQueue: () => messageQueue,
+  setQueue: (q) => { messageQueue = q; },
+};
