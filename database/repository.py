@@ -6,7 +6,14 @@ from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .connection import get_session
-from .models import Conversation, InboundMessage, MemoryRecord, Message, User
+from .models import (
+    Conversation,
+    InboundMessage,
+    MemoryRecord,
+    Message,
+    OutboundMessage,
+    User,
+)
 
 
 async def create_user(external_id: str, display_name: str, email: str | None = None, is_admin: bool = False) -> User:
@@ -333,15 +340,21 @@ async def mark_inbound_failed(
 
 async def recover_stale_inbound_leases(stale_threshold_seconds: float = 120.0) -> int:
     now = datetime.utcnow()
+    conditions = [InboundMessage.status == "PROCESSING"]
+    if stale_threshold_seconds <= 0:
+        pass
+    else:
+        threshold_cutoff = now - timedelta(seconds=stale_threshold_seconds)
+        conditions.append(
+            or_(
+                InboundMessage.lease_expires_at.is_(None),
+                InboundMessage.lease_expires_at < now,
+                InboundMessage.updated_at < threshold_cutoff,
+            )
+        )
     async with get_session() as session:
         result = await session.execute(
-            select(InboundMessage).where(
-                InboundMessage.status == "PROCESSING",
-                or_(
-                    InboundMessage.lease_expires_at.is_(None),
-                    InboundMessage.lease_expires_at < now,
-                ),
-            )
+            select(InboundMessage).where(*conditions)
         )
         stale_records = result.scalars().all()
         for rec in stale_records:
@@ -374,3 +387,317 @@ async def get_inbound_message(inbound_id: int) -> InboundMessage | None:
             select(InboundMessage).where(InboundMessage.id == inbound_id)
         )
         return result.scalars().first()
+
+
+# ============================================================================
+# Phase 2.1: Durable Outbound Delivery Repository Operations
+# ============================================================================
+
+async def create_or_get_outbound_message(
+    chat_id: str,
+    text: str | None = None,
+    correlation_id: str | None = None,
+    inbound_id: int | None = None,
+    conversation_id: int | None = None,
+    message_id: int | None = None,
+    platform: str = "whatsapp",
+    file_url: str | None = None,
+    mime_type: str | None = None,
+    caption: str | None = None,
+    max_attempts: int = 3,
+) -> OutboundMessage:
+    """Create a durable OutboundMessage or retrieve an existing one by correlation_id.
+
+    Guarantees idempotency: even if multiple recovery workers execute Stage 2,
+    only one OutboundMessage will ever be created per correlation_id.
+    """
+    if not correlation_id:
+        if inbound_id:
+            correlation_id = f"out_{platform}_{inbound_id}"
+        else:
+            correlation_id = f"out_{platform}_{int(datetime.utcnow().timestamp() * 1000)}"
+
+    now = datetime.utcnow()
+    async with get_session() as session:
+        res = await session.execute(
+            select(OutboundMessage).where(OutboundMessage.correlation_id == correlation_id)
+        )
+        existing = res.scalars().first()
+        if existing:
+            return existing
+
+        outbound = OutboundMessage(
+            inbound_id=inbound_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            correlation_id=correlation_id,
+            platform=platform,
+            chat_id=chat_id,
+            text=text,
+            file_url=file_url,
+            mime_type=mime_type,
+            caption=caption,
+            status="PENDING",
+            attempt_count=0,
+            max_attempts=max_attempts,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(outbound)
+        try:
+            await session.commit()
+            await session.refresh(outbound)
+            return outbound
+        except Exception:
+            await session.rollback()
+            res2 = await session.execute(
+                select(OutboundMessage).where(OutboundMessage.correlation_id == correlation_id)
+            )
+            found = res2.scalars().first()
+            if found:
+                return found
+            raise
+
+
+async def claim_next_outbound_message(
+    active_chat_ids: set[str],
+    lease_seconds: float = 60.0,
+    platform: str = "whatsapp",
+) -> OutboundMessage | None:
+    """Atomically lease the next pending outbound message for an inactive chat.
+
+    Per-conversation serialization: guarantees that two outbound workers
+    never dispatch messages for the same chat simultaneously.
+    """
+    now = datetime.utcnow()
+    lease_expiry = now + timedelta(seconds=lease_seconds)
+
+    async with get_session() as session:
+        active_db_chats = select(OutboundMessage.chat_id).where(
+            OutboundMessage.platform == platform,
+            OutboundMessage.status == "SENDING",
+            OutboundMessage.lease_expires_at.is_not(None),
+            OutboundMessage.lease_expires_at >= now,
+        )
+
+        conditions = [
+            OutboundMessage.platform == platform,
+            OutboundMessage.chat_id.not_in(active_db_chats),
+            or_(
+                OutboundMessage.status == "PENDING",
+                and_(
+                    OutboundMessage.status == "SENDING",
+                    or_(
+                        OutboundMessage.lease_expires_at.is_(None),
+                        OutboundMessage.lease_expires_at < now,
+                    ),
+                ),
+            ),
+        ]
+        if active_chat_ids:
+            conditions.append(OutboundMessage.chat_id.not_in(active_chat_ids))
+
+        stmt = (
+            select(OutboundMessage)
+            .where(*conditions)
+            .order_by(OutboundMessage.created_at.asc(), OutboundMessage.id.asc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        msg = result.scalars().first()
+
+        if msg is None:
+            return None
+
+        msg.status = "SENDING"
+        msg.attempt_count += 1
+        msg.lease_expires_at = lease_expiry
+        msg.updated_at = now
+        await session.commit()
+        await session.refresh(msg)
+        return msg
+
+
+async def mark_outbound_sending(
+    outbound_id: int,
+    lease_seconds: float = 60.0,
+    attempts: int | None = None,
+) -> None:
+    """Mark an outbound message as currently SENDING with an active lease."""
+    now = datetime.utcnow()
+    lease_expiry = now + timedelta(seconds=lease_seconds)
+    values = {
+        "status": "SENDING",
+        "lease_expires_at": lease_expiry,
+        "updated_at": now,
+    }
+    if attempts is not None:
+        values["attempt_count"] = attempts
+    async with get_session() as session:
+        await session.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.id == outbound_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def mark_outbound_sent(outbound_id: int) -> None:
+    """Mark an outbound message as confirmed delivered by the external bridge."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        await session.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.id == outbound_id)
+            .values(
+                status="SENT",
+                sent_at=now,
+                lease_expires_at=None,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+
+async def mark_outbound_ambiguous(
+    outbound_id: int,
+    error_msg: str,
+    attempts: int | None = None,
+) -> None:
+    """Mark an outbound message delivery outcome as ambiguous.
+
+    Used when a network timeout occurs while awaiting the bridge's response.
+    The message may or may not have been delivered externally. Blind retries are halted
+    to prevent sending duplicate messages to the recipient.
+    """
+    now = datetime.utcnow()
+    values = {
+        "status": "AMBIGUOUS",
+        "last_error": error_msg[:1000] if error_msg else None,
+        "lease_expires_at": None,
+        "updated_at": now,
+    }
+    if attempts is not None:
+        values["attempt_count"] = attempts
+    async with get_session() as session:
+        await session.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.id == outbound_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def mark_outbound_failed(
+    outbound_id: int,
+    error_msg: str,
+    attempts: int | None = None,
+) -> None:
+    """Mark an outbound message as permanently failed (dead-lettered)."""
+    now = datetime.utcnow()
+    values = {
+        "status": "FAILED",
+        "last_error": error_msg[:1000] if error_msg else None,
+        "lease_expires_at": None,
+        "updated_at": now,
+    }
+    if attempts is not None:
+        values["attempt_count"] = attempts
+    async with get_session() as session:
+        await session.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.id == outbound_id)
+            .values(**values)
+        )
+        await session.commit()
+
+
+async def requeue_outbound_retry(
+    outbound_id: int,
+    error_msg: str,
+    attempts: int | None = None,
+) -> None:
+    """Reset a transiently failed outbound message to PENDING for retry."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        result = await session.execute(
+            select(OutboundMessage).where(OutboundMessage.id == outbound_id)
+        )
+        msg = result.scalars().first()
+        if not msg:
+            return
+
+        if attempts is not None:
+            msg.attempt_count = attempts
+        else:
+            msg.attempt_count += 1
+
+        msg.last_error = error_msg[:1000] if error_msg else None
+        msg.updated_at = now
+        if msg.attempt_count >= msg.max_attempts:
+            msg.status = "FAILED"
+            msg.lease_expires_at = None
+        else:
+            msg.status = "PENDING"
+            msg.lease_expires_at = None
+        await session.commit()
+
+
+async def recover_stale_outbound_leases(stale_threshold_seconds: float = 60.0) -> int:
+    """Recover outbound messages stuck in SENDING with an expired lease."""
+    now = datetime.utcnow()
+    conditions = [OutboundMessage.status == "SENDING"]
+    if stale_threshold_seconds <= 0:
+        pass
+    else:
+        threshold_cutoff = now - timedelta(seconds=stale_threshold_seconds)
+        conditions.append(
+            or_(
+                OutboundMessage.lease_expires_at.is_(None),
+                OutboundMessage.lease_expires_at < now,
+                OutboundMessage.updated_at < threshold_cutoff,
+            )
+        )
+    async with get_session() as session:
+        result = await session.execute(
+            select(OutboundMessage).where(*conditions)
+        )
+        stale_records = result.scalars().all()
+        for rec in stale_records:
+            if rec.attempt_count >= rec.max_attempts:
+                rec.status = "FAILED"
+            else:
+                rec.status = "PENDING"
+            rec.lease_expires_at = None
+            rec.updated_at = now
+
+        if stale_records:
+            await session.commit()
+        return len(stale_records)
+
+
+async def get_outbound_by_inbound_id(inbound_id: int) -> OutboundMessage | None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(OutboundMessage).where(OutboundMessage.inbound_id == inbound_id)
+        )
+        return result.scalars().first()
+
+
+async def get_outbound_message(outbound_id: int) -> OutboundMessage | None:
+    async with get_session() as session:
+        result = await session.execute(
+            select(OutboundMessage).where(OutboundMessage.id == outbound_id)
+        )
+        return result.scalars().first()
+
+
+async def count_pending_outbound(platform: str = "whatsapp") -> int:
+    async with get_session() as session:
+        result = await session.execute(
+            select(func.count(OutboundMessage.id)).where(
+                OutboundMessage.platform == platform,
+                OutboundMessage.status.in_(["PENDING", "SENDING"]),
+            )
+        )
+        return result.scalar() or 0
