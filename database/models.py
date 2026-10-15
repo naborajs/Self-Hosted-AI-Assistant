@@ -91,3 +91,31 @@ class InboundMessage(Base):
         UniqueConstraint("platform", "external_id", name="uq_inbound_platform_external_id"),
         Index("ix_inbound_chat_status", "chat_id", "status"),
     )
+
+
+class OutboundMessage(Base):
+    __tablename__ = "outbound_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    inbound_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("inbound_messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True, index=True)
+    message_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    platform: Mapped[str] = mapped_column(String(32), default="whatsapp", nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_outbound_chat_status", "chat_id", "status"),
+    )
