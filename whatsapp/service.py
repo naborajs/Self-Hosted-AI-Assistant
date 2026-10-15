@@ -36,6 +36,7 @@ from database.repository import (
     save_message,
 )
 from ai.commands import handle_user_command
+from memory.store import get_memory_store
 
 logger = logging.getLogger("local_ai_assistant.whatsapp")
 
@@ -61,6 +62,7 @@ class WhatsAppGateway:
         self.running: bool = False
         self.outgoing_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.ai_client = OllamaClient()
+        self.memory_store = get_memory_store()
         self.pairing_code: str | None = None
         self.connected: bool = False
         self.session_lock = asyncio.Lock()
@@ -384,9 +386,9 @@ class WhatsAppGateway:
 
                 await save_message(conversation.id, sender, "user", content, message_type)
 
-                # 1. Command Interception (/models, /model, /language, /style)
+                # 1. Command Interception (/models, /model, /language, /style, /remember, /memories, /forget, /help)
                 is_command, command_reply = await handle_user_command(
-                    app_user, content, self.ai_client, self.settings
+                    app_user, content, self.ai_client, self.settings, self.memory_store
                 )
                 if is_command:
                     answer = command_reply or ""
@@ -425,13 +427,19 @@ class WhatsAppGateway:
                         if model_error:
                             answer = f"⚠️ {model_error}"
                         else:
-                            context = ConversationContext(conversation.id, self.ai_manager)
+                            context = ConversationContext(
+                                conversation.id,
+                                self.ai_manager,
+                                memory_store=self.memory_store,
+                                user_id=app_user.id,
+                            )
                             prompt = await context.build_prompt(
                                 platform="whatsapp",
                                 user_name=sender_name,
                                 user_message=content,
                                 preferred_language=pref_lang,
                                 response_style=pref_style,
+                                user_id=app_user.id,
                             )
                             prompt += "\nAssistant:"
 

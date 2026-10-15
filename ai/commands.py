@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from ai.client import OllamaClient
@@ -11,9 +12,22 @@ from database.repository import (
     set_user_preference,
 )
 
+from memory.store import get_memory_store
+
 logger = logging.getLogger("local_ai_assistant.ai_commands")
 
-SUPPORTED_COMMANDS = {"/models", "/model", "/language", "/style"}
+_pending_forget_all: dict[int, float] = {}
+FORGET_ALL_CONFIRMATION_TIMEOUT_SECONDS = 120.0
+
+
+def clear_pending_confirmations() -> None:
+    """Clear all pending confirmation states (useful for tests and cleanup)."""
+    _pending_forget_all.clear()
+
+SUPPORTED_COMMANDS = {
+    "/models", "/model", "/language", "/style",
+    "/remember", "/memories", "/forget", "/help",
+}
 
 
 def is_user_authorized_for_model_switch(user: User, settings: Any) -> bool:
@@ -41,8 +55,9 @@ async def handle_user_command(
     text: str | None,
     ai_client: OllamaClient,
     settings: Any,
+    memory_store: Any | None = None,
 ) -> tuple[bool, str | None]:
-    """Inspect an incoming message. If it is a personalization or model command,
+    """Inspect an incoming message. If it is a personalization, model, or memory command,
     process it idempotently and return (True, reply_text). Otherwise return (False, None).
     """
     if not text:
@@ -181,5 +196,122 @@ async def handle_user_command(
 
         await set_user_preference(user.id, response_style=style_val)
         return True, f"✅ Response style updated to **{style_val}**."
+
+    mem = memory_store or get_memory_store()
+
+    # 5. /remember - save or update a user fact
+    if command == "/remember":
+        if not arg:
+            return (
+                True,
+                "ℹ️ Usage: `/remember <key>=<value>` (e.g. `/remember city=Seattle` or `/remember coffee=espresso`)",
+            )
+
+        if "=" in arg:
+            key_part, val_part = arg.split("=", 1)
+        elif ":" in arg:
+            key_part, val_part = arg.split(":", 1)
+        elif " " in arg:
+            key_part, val_part = arg.split(maxsplit=1)
+        else:
+            return (
+                True,
+                "ℹ️ Usage: `/remember <key>=<value>` (e.g. `/remember city=Seattle` or `/remember coffee=espresso`)",
+            )
+
+        key_clean = key_part.strip()
+        val_clean = val_part.strip()
+        if not key_clean or not val_clean:
+            return (
+                True,
+                "ℹ️ Both key and value must be provided. Usage: `/remember <key>=<value>`",
+            )
+
+        try:
+            record = await mem.save_fact(user.id, key_clean, val_clean)
+            return True, f"✅ Remembered: **{record.key}** = {record.value}"
+        except ValueError as ve:
+            return True, f"❌ Validation error: {str(ve)}"
+        except Exception as exc:
+            logger.error("Failed to save memory for user %s: %s", user.id, exc)
+            return True, "⚠️ Failed to save memory due to an internal error. Please try again."
+
+    # 6. /memories - list or search saved user facts
+    if command == "/memories":
+        if not arg:
+            records = await mem.list_facts(user.id, limit=25)
+            if not records:
+                return (
+                    True,
+                    "🧠 You don't have any saved memories yet. Use `/remember <key>=<value>` to save one.",
+                )
+            lines = ["🧠 **Your Saved Memories:**"]
+            for r in records:
+                val_disp = r.value if len(r.value) <= 100 else (r.value[:97] + "...")
+                lines.append(f"• **{r.key}**: {val_disp}")
+            lines.append("\nUse `/forget <key>` to remove a memory or `/forget all` to clear all.")
+            return True, "\n".join(lines)
+
+        records = await mem.search_facts(user.id, arg)
+        if not records:
+            return True, f"🧠 No memories found matching '{arg}'."
+        lines = [f"🧠 **Memories matching '{arg}':**"]
+        for r in records:
+            val_disp = r.value if len(r.value) <= 100 else (r.value[:97] + "...")
+            lines.append(f"• **{r.key}**: {val_disp}")
+        return True, "\n".join(lines)
+
+    # 7. /forget - delete a specific fact or all facts
+    if command == "/forget":
+        if not arg:
+            return (
+                True,
+                "ℹ️ Usage: `/forget <key>` to delete a specific memory, or `/forget all` to clear all memories.",
+            )
+
+        arg_lower = arg.lower()
+        if arg_lower == "all":
+            _pending_forget_all[user.id] = time.time() + FORGET_ALL_CONFIRMATION_TIMEOUT_SECONDS
+            return (
+                True,
+                "⚠️ Are you sure you want to delete all your saved memories? Reply with `/forget all confirm` within 2 minutes to permanently clear your memory.",
+            )
+
+        if arg_lower in ("all confirm", "all_confirm"):
+            expiry = _pending_forget_all.get(user.id)
+            now = time.time()
+            if not expiry or now > expiry:
+                _pending_forget_all.pop(user.id, None)
+                return (
+                    True,
+                    "⚠️ Confirmation expired or not requested. Please send `/forget all` first if you wish to clear all memories.",
+                )
+            _pending_forget_all.pop(user.id, None)
+            count = await mem.clear_all_facts(user.id)
+            return True, f"🗑️ All your saved memories have been cleared ({count} fact{'s' if count != 1 else ''} removed)."
+
+        deleted = await mem.delete_fact_by_key(user.id, arg)
+        clean_key = arg.strip().lower()
+        if deleted:
+            return True, f"🗑️ Forgotten: **{clean_key}**"
+        return True, f"⚠️ No memory found for key: **{clean_key}**"
+
+
+    # 8. /help - command reference
+    if command == "/help":
+        help_text = (
+            "🤖 **EDITH Assistant Commands:**\n\n"
+            "**Model & Personalization:**\n"
+            "• `/models` — List installed Ollama models\n"
+            "• `/model [name]` — View or switch your active model\n"
+            "• `/language [lang]` — Set response language (e.g. `/language Spanish`)\n"
+            "• `/style [style]` — Set response style (`concise`, `detailed`, `normal`)\n\n"
+            "**Long-Term Memory:**\n"
+            "• `/remember <key>=<value>` — Save a personal fact (e.g. `/remember city=Seattle`)\n"
+            "• `/memories [query]` — View your saved memories\n"
+            "• `/forget <key>` — Delete a saved memory\n"
+            "• `/forget all` — Clear all your saved memories"
+        )
+        return True, help_text
 
     return False, None

@@ -179,8 +179,12 @@ async def save_memory(
     memory: MemoryStore = Depends(get_memory_store),
 ) -> dict:
     user = await get_or_create_user(current_user["username"], current_user["username"])
-    record = await memory.save_fact(user.id, key, value)
-    return {"id": record.id, "key": record.key, "value": record.value}
+    try:
+        record = await memory.save_fact(user.id, key, value)
+        return {"id": record.id, "key": record.key, "value": record.value}
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+
 
 
 @api_router.get("/memory/search")
@@ -348,14 +352,26 @@ async def save_knowledge(
 @api_router.get("/admin/memory")
 async def get_memory(
     query: str | None = None,
+    target_user_id: int | None = None,
     current_user: dict = Depends(get_current_user),
     memory: MemoryStore = Depends(get_memory_store),
 ) -> dict:
-    user = await get_or_create_user(current_user["username"], current_user["username"])
-    if query:
-        records = await memory.search_facts(user.id, query)
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+
+    if target_user_id is not None:
+        user = await get_user_by_id(target_user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target user not found")
+        uid = user.id
     else:
-        records = await memory.search_facts(user.id, "")
+        user = await get_or_create_user(current_user["username"], current_user["username"])
+        uid = user.id
+
+    if query:
+        records = await memory.search_facts(uid, query)
+    else:
+        records = await memory.list_facts(uid, limit=100)
     return {"memory": [{"id": record.id, "key": record.key, "value": record.value, "tags": record.tags} for record in records]}
 
 
@@ -364,28 +380,39 @@ async def manage_memory(
     key: str | None = None,
     value: str | None = None,
     tags: str | None = None,
+    target_user_id: int | None = None,
     action: Literal["save", "delete", "clear"] = "save",
     current_user: dict = Depends(get_current_user),
     memory: MemoryStore = Depends(get_memory_store),
 ) -> dict:
-    user = await get_or_create_user(current_user["username"], current_user["username"])
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privilege required")
+
+    if target_user_id is not None:
+        user = await get_user_by_id(target_user_id)
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Target user not found")
+        uid = user.id
+    else:
+        user = await get_or_create_user(current_user["username"], current_user["username"])
+        uid = user.id
+
     if action == "delete":
         if not key:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Key is required for delete")
-        records = await memory.search_facts(user.id, key)
-        for record in records:
-            await memory.delete_fact(record.id)
-        return {"status": "deleted", "key": key}
+        deleted = await memory.delete_fact_by_key(uid, key)
+        return {"status": "deleted" if deleted else "not_found", "key": key}
     if action == "clear":
-        records = await memory.search_facts(user.id, "")
-        for record in records:
-            await memory.delete_fact(record.id)
-        return {"status": "cleared"}
+        count = await memory.clear_all_facts(uid)
+        return {"status": "cleared", "count": count}
     if action == "save":
         if not key or value is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Key and value are required for save")
-        record = await memory.save_fact(user.id, key, value, tags)
-        return {"id": record.id, "key": record.key, "value": record.value, "tags": record.tags}
+        try:
+            record = await memory.save_fact(uid, key, value, tags)
+            return {"id": record.id, "key": record.key, "value": record.value, "tags": record.tags}
+        except ValueError as ve:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action")
 
 

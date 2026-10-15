@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
@@ -126,47 +127,245 @@ async def list_messages(conversation_id: int, limit: int = 100) -> list[Message]
         return messages
 
 
-async def save_memory_record(user_id: int, key: str, value: str, tags: str | None = None) -> MemoryRecord:
+MAX_MEMORY_KEY_LENGTH = 64
+MAX_MEMORY_VALUE_LENGTH = 1024
+MAX_MEMORY_TAGS_LENGTH = 256
+MAX_MEMORY_TAG_COUNT = 10
+
+
+def normalize_memory_key(key: str) -> str:
+    """Normalize a memory key: strip, lowercase, replace spaces with underscores.
+
+    Validates non-empty and enforces MAX_MEMORY_KEY_LENGTH.
+    """
+    if not key or not isinstance(key, str):
+        raise ValueError("Memory key must be a non-empty string.")
+    cleaned = key.strip().lower()
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    if not cleaned:
+        raise ValueError("Memory key cannot be empty or whitespace only.")
+    if len(cleaned) > MAX_MEMORY_KEY_LENGTH:
+        raise ValueError(f"Memory key exceeds maximum length of {MAX_MEMORY_KEY_LENGTH} characters.")
+    return cleaned
+
+
+def normalize_memory_value(value: str) -> str:
+    """Normalize a memory value: strip whitespace, enforce MAX_MEMORY_VALUE_LENGTH."""
+    if not value or not isinstance(value, str):
+        raise ValueError("Memory value must be a non-empty string.")
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Memory value cannot be empty or whitespace only.")
+    if len(cleaned) > MAX_MEMORY_VALUE_LENGTH:
+        raise ValueError(f"Memory value exceeds maximum length of {MAX_MEMORY_VALUE_LENGTH} characters.")
+    return cleaned
+
+
+def normalize_memory_tags(tags: str | list[str] | None) -> str | None:
+    """Normalize tags into a clean, comma-separated string."""
+    if not tags:
+        return None
+    if isinstance(tags, str):
+        tag_list = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    elif isinstance(tags, (list, set, tuple)):
+        tag_list = [str(t).strip().lower() for t in tags if str(t).strip()]
+    else:
+        return None
+
+    if not tag_list:
+        return None
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for t in tag_list:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+
+    deduped = deduped[:MAX_MEMORY_TAG_COUNT]
+    joined = ",".join(deduped)
+    if len(joined) > MAX_MEMORY_TAGS_LENGTH:
+        joined = joined[:MAX_MEMORY_TAGS_LENGTH].rstrip(",")
+    return joined or None
+
+
+async def upsert_user_memory(
+    user_id: int,
+    key: str,
+    value: str,
+    tags: str | list[str] | None = None,
+) -> tuple[MemoryRecord, bool]:
+    """Create or update a memory record for a specific user according to update policy.
+
+    If the key already exists for this user, its value and tags are updated.
+    If it does not exist, a new record is created.
+
+    Returns: (record, is_new_record)
+    """
+    if not user_id or not isinstance(user_id, int):
+        raise ValueError("Invalid user_id provided for memory operation.")
+
+    norm_key = normalize_memory_key(key)
+    norm_value = normalize_memory_value(value)
+    norm_tags = normalize_memory_tags(tags)
+    now = datetime.utcnow()
+
     async with get_session() as session:
-        record = MemoryRecord(
-            user_id=user_id,
-            key=key,
-            value=value,
-            tags=tags,
+        try:
+            result = await session.execute(
+                select(MemoryRecord).where(
+                    MemoryRecord.user_id == user_id,
+                    MemoryRecord.key == norm_key,
+                )
+            )
+            existing = result.scalars().first()
+            if existing:
+                existing.value = norm_value
+                if norm_tags is not None:
+                    existing.tags = norm_tags
+                existing.updated_at = now
+                await session.commit()
+                await session.refresh(existing)
+                return existing, False
+            else:
+                record = MemoryRecord(
+                    user_id=user_id,
+                    key=norm_key,
+                    value=norm_value,
+                    tags=norm_tags,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(record)
+                await session.commit()
+                await session.refresh(record)
+                return record, True
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def get_user_memory_by_key(user_id: int, key: str) -> MemoryRecord | None:
+    """Retrieve a specific memory record for a user by its key."""
+    if not user_id or not key:
+        return None
+    try:
+        norm_key = normalize_memory_key(key)
+    except ValueError:
+        return None
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(MemoryRecord).where(
+                MemoryRecord.user_id == user_id,
+                MemoryRecord.key == norm_key,
+            )
         )
-        session.add(record)
-        await session.commit()
-        await session.refresh(record)
-        return record
+        return result.scalars().first()
+
+
+async def list_user_memories(user_id: int, limit: int = 100) -> list[MemoryRecord]:
+    """List memory records belonging to a user, ordered by recent update."""
+    if not user_id:
+        return []
+    async with get_session() as session:
+        result = await session.execute(
+            select(MemoryRecord)
+            .where(MemoryRecord.user_id == user_id)
+            .order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+async def delete_user_memory_by_key(user_id: int, key: str) -> bool:
+    """Delete a specific memory record by key, strictly scoped to user_id."""
+    if not user_id or not key:
+        return False
+    try:
+        norm_key = normalize_memory_key(key)
+    except ValueError:
+        return False
+
+    async with get_session() as session:
+        try:
+            result = await session.execute(
+                delete(MemoryRecord).where(
+                    MemoryRecord.user_id == user_id,
+                    MemoryRecord.key == norm_key,
+                )
+            )
+            await session.commit()
+            return (result.rowcount or 0) > 0
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def delete_all_user_memories(user_id: int) -> int:
+    """Clear all memory records belonging to a user. Returns count deleted."""
+    if not user_id:
+        return 0
+    async with get_session() as session:
+        try:
+            result = await session.execute(
+                delete(MemoryRecord).where(MemoryRecord.user_id == user_id)
+            )
+            await session.commit()
+            return result.rowcount or 0
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def save_memory_record(user_id: int, key: str, value: str, tags: str | None = None) -> MemoryRecord:
+    rec, _ = await upsert_user_memory(user_id, key, value, tags)
+    return rec
 
 
 async def query_memory_records(user_id: int, key: str | None = None, tags: str | None = None) -> list[MemoryRecord]:
     async with get_session() as session:
         query = select(MemoryRecord).where(MemoryRecord.user_id == user_id)
         if key:
-            query = query.where(MemoryRecord.key == key)
+            try:
+                norm_key = normalize_memory_key(key)
+                query = query.where(MemoryRecord.key == norm_key)
+            except ValueError:
+                pass
         if tags:
-            query = query.where(MemoryRecord.tags.contains(tags))
-        result = await session.execute(query.order_by(MemoryRecord.updated_at.desc()))
-        return result.scalars().all()
+            clean_tag = tags.strip().lower()
+            query = query.where(MemoryRecord.tags.contains(clean_tag))
+        result = await session.execute(query.order_by(MemoryRecord.updated_at.desc(), MemoryRecord.id.desc()))
+        return list(result.scalars().all())
 
 
 async def update_memory_record(record_id: int, value: str, tags: str | None = None) -> MemoryRecord | None:
+    norm_val = normalize_memory_value(value)
+    norm_tags = normalize_memory_tags(tags)
+    now = datetime.utcnow()
     async with get_session() as session:
-        await session.execute(
-            update(MemoryRecord)
-            .where(MemoryRecord.id == record_id)
-            .values(value=value, tags=tags, updated_at=datetime.utcnow())
-        )
-        await session.commit()
-        result = await session.execute(select(MemoryRecord).where(MemoryRecord.id == record_id))
-        return result.scalars().first()
+        try:
+            await session.execute(
+                update(MemoryRecord)
+                .where(MemoryRecord.id == record_id)
+                .values(value=norm_val, tags=norm_tags, updated_at=now)
+            )
+            await session.commit()
+            result = await session.execute(select(MemoryRecord).where(MemoryRecord.id == record_id))
+            return result.scalars().first()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def delete_memory_record(record_id: int) -> None:
     async with get_session() as session:
-        await session.execute(delete(MemoryRecord).where(MemoryRecord.id == record_id))
-        await session.commit()
+        try:
+            await session.execute(delete(MemoryRecord).where(MemoryRecord.id == record_id))
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 # ============================================================================

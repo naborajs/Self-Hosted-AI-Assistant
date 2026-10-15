@@ -33,7 +33,7 @@ class TelegramGateway:
         self.ai_client = OllamaClient()
 
         self.application.add_handler(CommandHandler("start", self.handle_start))
-        self.application.add_handler(CommandHandler(["models", "model", "language", "style"], self.handle_command))
+        self.application.add_handler(CommandHandler(["models", "model", "language", "style", "remember", "memories", "forget", "help"], self.handle_command))
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     async def start(self) -> None:
@@ -69,7 +69,7 @@ class TelegramGateway:
             text = update.message.text
             await save_message(conversation.id, username, "user", text)
 
-            is_cmd, reply = await handle_user_command(app_user, text, self.ai_client, self.settings)
+            is_cmd, reply = await handle_user_command(app_user, text, self.ai_client, self.settings, self.memory)
             answer = reply or "Command processed."
             await save_message(conversation.id, "assistant", "assistant", answer)
             await update.message.reply_text(answer)
@@ -97,7 +97,7 @@ class TelegramGateway:
             await save_message(conversation.id, username, "user", text)
 
             # 1. Command Check (e.g. if sent without leading command filter)
-            is_cmd, cmd_reply = await handle_user_command(app_user, text, self.ai_client, self.settings)
+            is_cmd, cmd_reply = await handle_user_command(app_user, text, self.ai_client, self.settings, self.memory)
             if is_cmd:
                 answer = cmd_reply or ""
             else:
@@ -135,13 +135,19 @@ class TelegramGateway:
                     if model_error:
                         answer = f"⚠️ {model_error}"
                     else:
-                        context_obj = ConversationContext(conversation.id, self.ai_manager)
+                        context_obj = ConversationContext(
+                            conversation.id,
+                            self.ai_manager,
+                            memory_store=self.memory,
+                            user_id=app_user.id,
+                        )
                         prompt = await context_obj.build_prompt(
                             platform="telegram",
                             user_name=username,
                             user_message=text,
                             preferred_language=pref_lang,
                             response_style=pref_style,
+                            user_id=app_user.id,
                         )
                         prompt += "\nAssistant:"
                         try:

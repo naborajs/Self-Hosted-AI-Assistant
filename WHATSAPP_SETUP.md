@@ -201,12 +201,24 @@ WHERE status IN ('AMBIGUOUS', 'FAILED');
 
 ---
 
+## Interactive Memory Management
+
+WhatsApp users can manage their personal long-term memories directly in chat:
+- `/remember <key>=<value>`: Save or update a personal fact (e.g. `/remember city=Seattle`).
+- `/memories [query]`: View saved facts or search with keywords.
+- `/forget <key>`: Delete a stored fact.
+- `/forget all`: Clear all facts (requires `/forget all confirm`).
+
+Each user's memories are strictly isolated by their unique WhatsApp JID (`whatsapp:<jid>`) mapped to their database record. Context retrieval deterministically caps included memories at 5 records and 600 total characters inside an untrusted reference block.
+
+---
+
 ## Verification & Automated Tests
 
 Run the complete regression test suite:
 ```bash
-# Python adaptive models, durability, and regression tests (73 tests)
-python -m pytest -v -W ignore
+# Python adaptive models, durability, long-term memory, and regression tests (103 tests)
+python -m pytest -v -p no:warnings
 
 # Node.js bridge security & queue tests
 node whatsapp_bridge/test_bridge_security.js
