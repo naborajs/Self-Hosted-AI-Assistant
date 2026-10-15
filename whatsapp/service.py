@@ -21,7 +21,13 @@ class WhatsAppGateway:
         self.settings = settings
         self.ai_manager = ai_manager
         self.base_url = str(settings.whatsapp_bridge_url).rstrip("/")
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+        headers = {}
+        if getattr(settings, "whatsapp_bridge_secret", None):
+            secret_obj = settings.whatsapp_bridge_secret
+            secret_val = secret_obj.get_secret_value() if hasattr(secret_obj, "get_secret_value") else str(secret_obj)
+            if secret_val:
+                headers["X-Bridge-Secret"] = secret_val
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), headers=headers)
         self.poll_task: asyncio.Task | None = None
         self.send_task: asyncio.Task | None = None
         self.outgoing_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()

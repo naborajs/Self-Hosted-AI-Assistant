@@ -33,15 +33,12 @@ if errorlevel 1 (
 )
 echo [OK] Ollama is running
 
-REM Check if model exists
-echo [3/4] Checking for Ollama model (qwen3:8b)...
-ollama list 2>&1 | find "qwen3:8b" >nul
-if errorlevel 1 (
-    echo WARNING: Model qwen3:8b not found
-    echo Pulling model: ollama pull qwen3:8b
-    ollama pull qwen3:8b
-)
-echo [OK] Model ready
+REM Check Ollama model availability without automatic downloads
+echo [3/4] Verifying Ollama model availability...
+echo Available models on your system:
+ollama list
+echo Note: Ensure your configured model (set in .env as OLLAMA_MODEL) is available in Ollama.
+echo EDITH will not automatically download, pull, or preload any model.
 
 REM Start WhatsApp bridge
 echo [4/4] Starting WhatsApp Bridge...

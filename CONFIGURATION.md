@@ -12,12 +12,30 @@
 | `OLLAMA_MODEL` | Ollama model identifier | `qwen3:8b` |
 | `OLLAMA_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `DATABASE_URL` | SQLAlchemy database URL | `sqlite+aiosqlite:///./assistant.db` |
-| `SESSION_SECRET` | Secret for admin auth and encrypted storage | `supersecret` |
+| `SESSION_SECRET` | Secret for JWT signing and session encryption (min 32 chars) | `replace-with-strong-secret-min-32-chars` |
 | `ADMIN_USERS` | Comma-separated admin usernames | `admin` |
+| `ADMIN_PASSWORD_HASH` | BCrypt password hash for administrator authentication | `$2b$12$...` |
 | `RATE_LIMIT_PER_MINUTE` | API rate limit | `60` |
 | `WHATSAPP_BRIDGE_URL` | Local bridge endpoint | `http://127.0.0.1:3000` |
 | `WHATSAPP_BRIDGE_HOST` | WhatsApp bridge host | `127.0.0.1` |
 | `WHATSAPP_BRIDGE_PORT` | WhatsApp bridge port | `3000` |
+| `WHATSAPP_BRIDGE_SECRET` | Shared secret header (`X-Bridge-Secret`) for internal bridge API | `replace-with-bridge-secret-min-32-chars` |
+| `CORS_ORIGINS` | Comma-separated trusted browser origins for CORS | `http://127.0.0.1:8000,http://localhost:3000` |
+
+## Provisioning Administrator Credentials
+
+To generate a secure bcrypt password hash for `ADMIN_PASSWORD_HASH`, run:
+
+```bash
+python -c "import bcrypt; print(bcrypt.hashpw(b'YOUR_SECRET_PASSWORD', bcrypt.gensalt()).decode())"
+```
+
+Add the generated hash to your `.env` file:
+```ini
+ADMIN_PASSWORD_HASH=$2b$12$...
+```
+Note: `SESSION_SECRET` is strictly used for cryptographic signing and cannot be used as a password.
+
 
 ## Files and Storage
 

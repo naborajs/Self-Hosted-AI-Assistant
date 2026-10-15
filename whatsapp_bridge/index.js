@@ -28,12 +28,37 @@ const AUTH_DIR = path.join(STORAGE_PATH, "auth_state");
 const ENCRYPTED_AUTH_FILE = path.join(STORAGE_PATH, "auth_state.json.enc");
 const MEDIA_PATH = path.join(STORAGE_PATH, "media");
 const SESSION_SECRET = process.env.SESSION_SECRET;
+const BRIDGE_SECRET = process.env.WHATSAPP_BRIDGE_SECRET || process.env.BRIDGE_SECRET;
 
 if (!SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required for encrypted WhatsApp auth storage.");
 }
 
 const KEY = crypto.createHash("sha256").update(SESSION_SECRET, "utf8").digest();
+
+function constantTimeCompare(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function requireBridgeAuth(req, res, next) {
+  if (!BRIDGE_SECRET) {
+    console.error("[bridge] Request rejected: WHATSAPP_BRIDGE_SECRET is not configured on the bridge.");
+    return res.status(500).json({ error: "Bridge secret is not configured" });
+  }
+
+  const headerSecret = req.headers["x-bridge-secret"] || (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null);
+  const querySecret = req.path === "/qr" ? req.query.secret : null;
+  const provided = headerSecret || querySecret;
+
+  if (!provided || !constantTimeCompare(provided, BRIDGE_SECRET)) {
+    return res.status(401).json({ error: "Unauthorized: Invalid or missing bridge secret" });
+  }
+  next();
+}
 
 let socket = null;
 let currentQr = null;
@@ -351,11 +376,11 @@ app.get("/health", (_, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-app.get("/status", (_, res) => {
+app.get("/status", requireBridgeAuth, (_, res) => {
   res.json({ connected, connectionState });
 });
 
-app.post("/pair", async (req, res) => {
+app.post("/pair", requireBridgeAuth, async (req, res) => {
   try {
     await startSocket();
     const data = { pairing_code: currentQr, connected, connectionState };
@@ -365,14 +390,14 @@ app.post("/pair", async (req, res) => {
   }
 });
 
-app.get("/pairing_code", (_, res) => {
+app.get("/pairing_code", requireBridgeAuth, (_, res) => {
   res.json({
     qr_available: Boolean(currentQr),
     connection_state: connectionState,
   });
 });
 
-app.get("/qr", async (req, res) => {
+app.get("/qr", requireBridgeAuth, async (req, res) => {
   if (!currentQr) {
     return res.status(404).json({ error: "QR code not available" });
   }
@@ -386,7 +411,7 @@ app.get("/qr", async (req, res) => {
   }
 });
 
-app.get("/poll", (req, res) => {
+app.get("/poll", requireBridgeAuth, (req, res) => {
   try {
     console.log('[bridge] /poll requested - queue_size=', messageQueue.length);
   } catch (e) {}
@@ -395,7 +420,7 @@ app.get("/poll", (req, res) => {
   res.json({ messages: items });
 });
 
-app.post("/send-message", async (req, res) => {
+app.post("/send-message", requireBridgeAuth, async (req, res) => {
   try {
     const { chat_id, text, file_url, mime_type, caption } = req.body;
     try { console.log('[bridge] /send-message payload received:', JSON.stringify({ chat_id, text: text? (text.length>200? text.slice(0,200)+'...': text): null, file_url, mime_type, caption })); } catch (e) {}
@@ -420,7 +445,7 @@ app.post("/send-message", async (req, res) => {
   }
 });
 
-app.post("/typing", async (req, res) => {
+app.post("/typing", requireBridgeAuth, async (req, res) => {
   try {
     const { chat_id } = req.body;
     if (!socket) {
@@ -435,7 +460,7 @@ app.post("/typing", async (req, res) => {
   }
 });
 
-app.post("/logout", async (_, res) => {
+app.post("/logout", requireBridgeAuth, async (_, res) => {
   try {
     if (socket) {
       await socket.logout();
@@ -459,7 +484,7 @@ app.post("/logout", async (_, res) => {
   }
 });
 
-app.get("/media/:fileName", async (req, res) => {
+app.get("/media/:fileName", requireBridgeAuth, async (req, res) => {
   const filePath = path.join(MEDIA_PATH, req.params.fileName);
   try {
     res.sendFile(filePath);

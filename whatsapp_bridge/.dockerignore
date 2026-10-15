@@ -1,0 +1,18 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# WhatsApp runtime storage, session state, and media
+storage/
+auth_state/
+*.enc
+*.session
+
+# Node dependencies and logs
+node_modules/
+npm-debug.log
+
+# Git metadata
+.git/
+.gitignore

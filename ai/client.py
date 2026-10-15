@@ -41,11 +41,20 @@ class OllamaClient:
             if not result:
                 logger.warning("Ollama returned empty response for prompt")
             return result
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.error("Configured Ollama model '%s' was not found on Ollama server at %s: %s", self.model, self.base_url, exc)
+                return f"Error: Configured model '{self.model}' is not installed in Ollama. Please check 'ollama list' and configure an available model."
+            logger.error("Ollama HTTP status error: %s", exc)
+            raise
+        except httpx.ConnectError as exc:
+            logger.error("Ollama connection error (server unreachable at %s): %s", self.base_url, exc)
+            raise
         except httpx.HTTPError as exc:
             logger.error("Ollama HTTP error: %s", exc)
             raise
         except Exception as exc:
-            logger.error("Ollama connection error: %s", exc)
+            logger.error("Ollama error: %s", exc)
             raise
 
     async def stream_generate(self, prompt: str, temperature: float = 0.3, max_tokens: int = 1024) -> Any:

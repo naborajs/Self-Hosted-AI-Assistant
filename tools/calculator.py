@@ -21,10 +21,10 @@ def calculate_expression(expression: str) -> str:
 
 
 def _evaluate(node):
-    if isinstance(node, ast.Num):
-        return node.n
     if isinstance(node, ast.Constant):
         return node.value
+    if hasattr(ast, "Num") and isinstance(node, getattr(ast, "Num")):
+        return getattr(node, "n")
     if isinstance(node, ast.BinOp):
         left = _evaluate(node.left)
         right = _evaluate(node.right)

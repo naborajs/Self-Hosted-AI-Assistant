@@ -1,0 +1,37 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.enc
+*.session
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+assistant.db
+
+# WhatsApp session state & media
+storage/whatsapp_bridge/
+storage/sessions/
+whatsapp_bridge/storage/
+
+# Python virtual envs and caches
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# Git metadata
+.git/
+.gitignore
