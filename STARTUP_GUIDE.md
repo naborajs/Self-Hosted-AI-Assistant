@@ -94,36 +94,25 @@ python main.py
 stop.bat
 ```
 
-## End-to-End Message Flow
+## End-to-End Message Flow (Phase 2 Durable Pipeline)
 
 1. **User sends WhatsApp message**
-   - Message arrives at @whiskeysockets/baileys bridge
-   - Bridge stores in internal queue
+   - Message arrives at @whiskeysockets/baileys companion bridge.
+   - Bridge assigns stable fallback hash if ID is missing, validates deduplication, and atomically writes the event to `inbound_queue.json` under an asynchronous lock.
 
-2. **Python Backend Polls**
-   - Polls `/poll` endpoint every 1 second
-   - Gets all queued messages
-   - Queue is cleared
+2. **Python Backend Long-Polls & Persists**
+   - WhatsApp gateway polls `/poll?limit=50` (non-destructive).
+   - Inbound batch is durably committed into SQLite `inbound_messages` table.
+   - Only after successful DB commit does Python send `POST /ack` with persisted message IDs, removing them from the bridge queue.
 
-3. **Message Processing**
-   - Extract sender, chat_id, content
-   - Save to database
-   - Get or create user and conversation
+3. **Bounded Asynchronous Workers (Default: 3 Workers)**
+   - Concurrent workers claim pending messages (`RECEIVED` or stale `PROCESSING`).
+   - Chat-level serialization guarantees strict FIFO processing within each chat while allowing independent conversations to run concurrently.
 
-4. **AI Response Generation**
-   - Build conversation context (last 12 messages)
-   - Add system prompt
-   - Send to Ollama at http://127.0.0.1:11434/api/generate
-   - Wait for response
-
-5. **Response Saving**
-   - Save AI response to database
-   - Queue message for sending
-
-6. **Message Sending**
-   - `/send-message` endpoint receives message
-   - Baileys library sends via WhatsApp
-   - User receives response
+4. **Staged AI Response Generation & Delivery**
+   - **Stage 1 (Inference)**: AI model generates response and records it in `response_text` with status `RESPONSE_READY`.
+   - **Stage 2 (Delivery)**: User/assistant messages are recorded in conversation history, outbound message is queued to the bridge, and status is marked `COMPLETED`.
+   - If a crash occurs between Stage 1 and Stage 2, restarting the process immediately resumes delivery without repeating LLM inference.
 
 ## Health Check
 
@@ -155,7 +144,7 @@ Response:
 
 On first run, WhatsApp bridge needs pairing:
 
-1. Open browser: http://127.0.0.1:3000/qr
+1. Open browser: http://127.0.0.1:3000/qr-display
 2. Scan QR code with WhatsApp companion app
 3. Bridge will connect automatically
 4. Session is encrypted and stored
@@ -244,7 +233,7 @@ Edit `.env` to customize:
 1. Configure .env with your settings
 2. Start Ollama: `ollama serve`
 3. Run: `start.bat`
-4. Scan QR code on http://127.0.0.1:3000/qr
+4. Scan QR code on http://127.0.0.1:3000/qr-display
 5. Send test message to WhatsApp number
 6. Receive AI response
 7. Check http://127.0.0.1:8000/health for system status
