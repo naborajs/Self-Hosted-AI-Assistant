@@ -37,6 +37,14 @@ class Settings(BaseSettings):
         env="CORS_ORIGINS",
     )
 
+    # Phase 2: Inbound Inbox & Worker Pool Configuration
+    inbox_worker_count: int = Field(3, env="INBOX_WORKER_COUNT")
+    inbox_max_batch_size: int = Field(50, env="INBOX_MAX_BATCH_SIZE")
+    inbox_max_attempts: int = Field(3, env="INBOX_MAX_ATTEMPTS")
+    inbox_lease_timeout: float = Field(120.0, env="INBOX_LEASE_TIMEOUT")
+    inbox_poll_interval: float = Field(1.0, env="INBOX_POLL_INTERVAL")
+    inbox_max_pending: int = Field(200, env="INBOX_MAX_PENDING")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
