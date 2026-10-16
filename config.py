@@ -50,7 +50,18 @@ class Settings(BaseSettings):
     ollama_max_concurrency: int = Field(3, env="OLLAMA_MAX_CONCURRENCY")
     allow_user_model_selection: bool = Field(False, env="ALLOW_USER_MODEL_SELECTION")
 
+    # Phase 4B: Controlled Tool Execution Configuration
+    enable_tool_execution: bool = Field(True, env="ENABLE_TOOL_EXECUTION")
+    tool_max_rounds: int = Field(3, env="TOOL_MAX_ROUNDS")
+    tool_max_calls_per_request: int = Field(5, env="TOOL_MAX_CALLS_PER_REQUEST")
+    tool_timeout_seconds: float = Field(15.0, env="TOOL_TIMEOUT_SECONDS")
+    tool_max_output_chars: int = Field(2000, env="TOOL_MAX_OUTPUT_CHARS")
+    allow_external_network_tools: bool = Field(False, env="ALLOW_EXTERNAL_NETWORK_TOOLS")
+    tool_workspace_root: Path = Field(default_factory=lambda: Path.cwd() / "storage" / "workspace")
+    tool_default_permission_policy: str = Field("standard", env="TOOL_DEFAULT_PERMISSION_POLICY")
+
     class Config:
+
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False

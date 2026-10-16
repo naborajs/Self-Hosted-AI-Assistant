@@ -19,6 +19,8 @@ from ai.client import OllamaClient
 from ai.commands import handle_user_command
 from ai.conversation import ConversationContext
 from ai.manager import AIManager
+from ai.orchestrator import ToolOrchestrator
+from ai.tools import ToolRegistry
 
 logger = logging.getLogger("local_ai_assistant.telegram")
 
@@ -31,9 +33,15 @@ class TelegramGateway:
         self.bot_token = settings.telegram_bot_token
         self.application = Application.builder().token(self.bot_token).build()
         self.ai_client = OllamaClient()
+        self.tool_registry = ToolRegistry(self.settings)
+        self.tool_orchestrator = ToolOrchestrator(self.ai_client, self.tool_registry, self.settings)
 
         self.application.add_handler(CommandHandler("start", self.handle_start))
-        self.application.add_handler(CommandHandler(["models", "model", "language", "style", "remember", "memories", "forget", "help"], self.handle_command))
+        self.application.add_handler(CommandHandler(
+            ["models", "model", "language", "style", "remember", "memories", "forget", "help", "confirm", "cancel"],
+            self.handle_command,
+        ))
+
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
 
     async def start(self) -> None:
@@ -69,7 +77,15 @@ class TelegramGateway:
             text = update.message.text
             await save_message(conversation.id, username, "user", text)
 
-            is_cmd, reply = await handle_user_command(app_user, text, self.ai_client, self.settings, self.memory)
+            is_cmd, reply = await handle_user_command(
+                app_user,
+                text,
+                self.ai_client,
+                self.settings,
+                self.memory,
+                conversation_id=conversation.id,
+                tool_registry=self.tool_registry,
+            )
             answer = reply or "Command processed."
             await save_message(conversation.id, "assistant", "assistant", answer)
             await update.message.reply_text(answer)
@@ -97,7 +113,15 @@ class TelegramGateway:
             await save_message(conversation.id, username, "user", text)
 
             # 1. Command Check (e.g. if sent without leading command filter)
-            is_cmd, cmd_reply = await handle_user_command(app_user, text, self.ai_client, self.settings, self.memory)
+            is_cmd, cmd_reply = await handle_user_command(
+                app_user,
+                text,
+                self.ai_client,
+                self.settings,
+                self.memory,
+                conversation_id=conversation.id,
+                tool_registry=self.tool_registry,
+            )
             if is_cmd:
                 answer = cmd_reply or ""
             else:
@@ -141,28 +165,68 @@ class TelegramGateway:
                             memory_store=self.memory,
                             user_id=app_user.id,
                         )
-                        prompt = await context_obj.build_prompt(
-                            platform="telegram",
-                            user_name=username,
-                            user_message=text,
-                            preferred_language=pref_lang,
-                            response_style=pref_style,
-                            user_id=app_user.id,
-                        )
-                        prompt += "\nAssistant:"
-                        try:
+
+                        if getattr(self.settings, "enable_tool_execution", True):
+                            system_context = self.ai_manager.build_system_context(platform="telegram", user_name=username)
+                            knowledge = self.ai_manager.search_knowledge(text)
+                            history = await context_obj.load_history()
+                            mem_facts: list[str] = []
+                            if self.memory:
+                                try:
+                                    facts = await self.memory.retrieve_relevant_facts(
+                                        user_id=app_user.id,
+                                        query_text=text,
+                                        max_count=5,
+                                        max_chars=600,
+                                    )
+                                    for f in facts:
+                                        clean_val = str(f.value).replace("\n", " ").strip()
+                                        mem_facts.append(f"- {f.key}: {clean_val}")
+                                except Exception as exc:
+                                    logger.warning("Memory retrieval in telegram gateway failed: %s", exc)
+
                             try:
-                                answer = await self.ai_client.generate(prompt, model=effective_model)
-                            except TypeError as te:
-                                if "unexpected keyword argument 'model'" in str(te) or "got an unexpected keyword argument" in str(te):
-                                    answer = await self.ai_client.generate(prompt)
-                                else:
-                                    raise
-                            if not answer or not answer.strip():
-                                answer = "I couldn't generate a response. Please try again."
-                        except Exception as exc:
-                            logger.exception("Ollama generation failed: %s", exc)
-                            answer = f"I encountered an error processing your request: {exc}"
+                                answer = await self.tool_orchestrator.run_turn(
+                                    user_id=app_user.id,
+                                    conversation_id=conversation.id,
+                                    user_message=text,
+                                    system_context=system_context,
+                                    history=history,
+                                    model=effective_model,
+                                    user_name=username,
+                                    platform="telegram",
+                                    preferred_language=pref_lang,
+                                    response_style=pref_style,
+                                    knowledge_snippets=knowledge,
+                                    user_memories=mem_facts,
+                                )
+                            except Exception as exc:
+                                logger.exception("Tool orchestrator failed in telegram gateway: %s", exc)
+                                answer = f"I encountered an error processing your request: {exc}"
+                        else:
+                            prompt = await context_obj.build_prompt(
+                                platform="telegram",
+                                user_name=username,
+                                user_message=text,
+                                preferred_language=pref_lang,
+                                response_style=pref_style,
+                                user_id=app_user.id,
+                            )
+                            prompt += "\nAssistant:"
+                            try:
+                                try:
+                                    answer = await self.ai_client.generate(prompt, model=effective_model)
+                                except TypeError as te:
+                                    if "unexpected keyword argument 'model'" in str(te) or "got an unexpected keyword argument" in str(te):
+                                        answer = await self.ai_client.generate(prompt)
+                                    else:
+                                        raise
+                                if not answer or not answer.strip():
+                                    answer = "I couldn't generate a response. Please try again."
+                            except Exception as exc:
+                                logger.exception("Ollama generation failed: %s", exc)
+                                answer = f"I encountered an error processing your request: {exc}"
+
 
             await save_message(conversation.id, "assistant", "assistant", answer)
             logger.debug("Sending Telegram reply to %s: %s", username, answer and (answer[:200] + ("..." if len(answer) > 200 else "")))

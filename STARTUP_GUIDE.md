@@ -244,9 +244,27 @@ Edit `.env` to customize:
 | `/forget` | `<key>` | Anyone | Delete a specific memory fact by its key |
 | `/forget all` | None | Anyone | Request two-step confirmation (expires in 2 minutes) to clear all user memories |
 | `/forget all confirm` | None | Anyone | Confirms and permanently clears all memories for the requesting user (within 2-min window) |
+| `/confirm` | `[token | yes]` | Anyone | Authorize and execute a staged tool action (e.g. file writing) within 2 minutes |
+| `/cancel` | None | Anyone | Abort and cancel a pending staged tool action |
 
+### Phase 4B: Controlled AI Tool Execution Framework
+
+EDITH integrates autonomous tool calling directly into WhatsApp and Telegram message workflows with strict security boundaries:
+
+1. **Tool Capabilities & Sandboxed Workspace**:
+   - Supported models natively call registered tools (`calculator`, `search`, `weather`, `file_manager:list`, `file_manager:read`, `file_manager:write`, `youtube`, `minecraft`).
+   - File system access is strictly sandboxed to `storage/workspace`. Directory traversal (`..`), Windows drive letters (`C:`), UNC paths (`//`), and blacklisted files/extensions (`.env`, `.db`, `.py`, `.git`, `.key`, `.sh`) are strictly prohibited.
+   - External network access for `search` and `weather` can be toggled via `ALLOW_EXTERNAL_NETWORK_TOOLS`.
+2. **Loop & DoS Defense**:
+   - Iterative reasoning turns are capped to a maximum of 3 rounds (`TOOL_MAX_ROUNDS`) and 5 total tool calls (`TOOL_MAX_CALLS_PER_REQUEST`).
+   - Each tool execution is bounded by a 15-second timeout (`TOOL_TIMEOUT_SECONDS`) and 2,000-character output cap (`TOOL_MAX_OUTPUT_CHARS`).
+3. **Untrusted Tool Output Isolation**:
+   - Tool execution results are wrapped in untrusted reference markers before re-injection into model prompts, preventing prompt injection attacks from web pages or external data.
+4. **Human-in-the-Loop Confirmation**:
+   - State-modifying operations (such as `file_manager:write`) cannot run autonomously. EDITH stages a durable `PendingAction` in SQLite with a 120-second TTL and prompts the user for confirmation via `/confirm [token | yes]` or cancellation via `/cancel`.
 
 ### Phase 4A: Long-Term Memory & Context Retrieval
+
 
 The long-term memory system enables users to persist personal preferences and facts that deterministically enrich conversation prompts.
 

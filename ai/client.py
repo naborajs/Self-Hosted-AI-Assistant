@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import json
 import logging
 import time
 from typing import Any
@@ -11,6 +12,7 @@ import httpx
 from config import settings
 
 logger = logging.getLogger("local_ai_assistant.ai")
+
 
 
 class OllamaError(Exception):
@@ -53,6 +55,24 @@ class ModelInfo:
         }
 
 
+TOOL_UNSUPPORTED_ERROR_PATTERNS = (
+    "does not support tools",
+    "tools are not supported",
+    "tool calls not supported",
+    "does not support function",
+    "model does not support tools",
+    "tools are not available for this model",
+)
+
+
+def is_unsupported_tool_error(status_code: int, response_text: str) -> bool:
+    """Determine whether an HTTP error provides verified evidence that a model lacks tool support."""
+    if status_code not in (400, 500):
+        return False
+    lower = (response_text or "").lower()
+    return any(p in lower for p in TOOL_UNSUPPORTED_ERROR_PATTERNS)
+
+
 class OllamaClient:
     def __init__(
         self,
@@ -83,6 +103,8 @@ class OllamaClient:
         self._cache_timestamp: float = 0.0
         self._cache_lock = asyncio.Lock()
         self.semaphore = asyncio.Semaphore(max(1, concurrency))
+        self._tool_unsupported_models: set[str] = set()
+
 
     async def is_ollama_available(self) -> bool:
         """Check if the Ollama HTTP endpoint is reachable without starting or loading models."""
@@ -247,7 +269,128 @@ class OllamaClient:
                 logger.error("Ollama error: %s", exc)
                 raise
 
+    def is_tool_supported(self, model_name: str) -> bool:
+        """Check whether a model is marked as supporting tool execution."""
+        return model_name not in self._tool_unsupported_models
+
+    def mark_tool_unsupported(self, model_name: str) -> None:
+        """Mark a model as unsupported for tool execution after a verified rejection."""
+        self._tool_unsupported_models.add(model_name)
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.3,
+        max_tokens: int = 1024,
+        validate: bool = True,
+    ) -> dict[str, Any]:
+        """Execute a structured chat request with native tool calling and automatic fallback."""
+        target_model = model or self.model
+        if not target_model:
+            return {"content": "Error: No model selected or configured.", "tool_calls": []}
+
+        if validate:
+            is_available = await self.is_ollama_available()
+            if not is_available:
+                logger.error("Ollama service unreachable at %s when sending chat", self.base_url)
+                raise OllamaConnectionError(f"Ollama service is unreachable at {self.base_url}.")
+
+            installed = await self.is_model_installed(target_model)
+            if not installed:
+                logger.error("Requested model '%s' is not installed in Ollama (%s)", target_model, self.base_url)
+                raise ModelNotFoundError(f"Model '{target_model}' is not installed in Ollama.")
+
+        # If model is already known not to support tools, strip tools payload
+        active_tools = tools
+        if target_model in self._tool_unsupported_models:
+            active_tools = None
+
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+        if active_tools:
+            payload["tools"] = active_tools
+
+        async with self.semaphore:
+            try:
+                response = await self.session.post(f"{self.base_url}/api/chat", json=payload)
+
+                # Check for explicit tool incompatibility error in response
+                if active_tools and is_unsupported_tool_error(response.status_code, response.text):
+                    logger.warning(
+                        "Model '%s' rejected tools parameter with verified incompatibility (%s). Marking unsupported and falling back to non-tool chat.",
+                        target_model, response.text[:200]
+                    )
+                    self._tool_unsupported_models.add(target_model)
+                    payload.pop("tools", None)
+                    response = await self.session.post(f"{self.base_url}/api/chat", json=payload)
+
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    raise ModelNotFoundError(f"Model '{target_model}' is not installed in Ollama.")
+                if active_tools and is_unsupported_tool_error(exc.response.status_code, exc.response.text):
+                    logger.warning(
+                        "Model '%s' failed with verified tool incompatibility (%s). Marking tool-unsupported and retrying without tools.",
+                        target_model, exc.response.text[:200]
+                    )
+                    self._tool_unsupported_models.add(target_model)
+                    payload.pop("tools", None)
+                    response = await self.session.post(f"{self.base_url}/api/chat", json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                else:
+                    raise
+            except httpx.ConnectError:
+                raise OllamaConnectionError(f"Ollama server unreachable at {self.base_url}")
+            except httpx.TimeoutException as exc:
+                logger.error("Ollama chat timed out for model '%s': %s", target_model, exc)
+                raise
+
+            msg = data.get("message", {})
+            content = msg.get("content", "")
+            raw_tool_calls = msg.get("tool_calls", [])
+            parsed_tool_calls: list[dict[str, Any]] = []
+
+            if isinstance(raw_tool_calls, list):
+                for tc in raw_tool_calls:
+                    if not isinstance(tc, dict):
+                        continue
+                    func_obj = tc.get("function")
+                    if isinstance(func_obj, dict):
+                        func_name = str(func_obj.get("name", "")).strip()
+                        raw_args = func_obj.get("arguments", {})
+                        if isinstance(raw_args, str):
+                            try:
+                                parsed_args = json.loads(raw_args)
+                            except Exception:
+                                parsed_args = {"raw_input": raw_args}
+                        elif isinstance(raw_args, dict):
+                            parsed_args = raw_args
+                        else:
+                            parsed_args = {}
+                        parsed_tool_calls.append({
+                            "name": func_name,
+                            "arguments": parsed_args,
+                        })
+
+            return {
+                "content": content,
+                "tool_calls": parsed_tool_calls,
+                "raw_message": msg,
+            }
+
     async def stream_generate(
+
         self,
         prompt: str,
         model: str | None = None,

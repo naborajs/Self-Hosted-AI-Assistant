@@ -201,15 +201,24 @@ WHERE status IN ('AMBIGUOUS', 'FAILED');
 
 ---
 
-## Interactive Memory Management
+## Interactive Memory & Tool Management
 
-WhatsApp users can manage their personal long-term memories directly in chat:
+WhatsApp users can manage their personal long-term memories and authorize sensitive tool operations directly in chat:
 - `/remember <key>=<value>`: Save or update a personal fact (e.g. `/remember city=Seattle`).
 - `/memories [query]`: View saved facts or search with keywords.
 - `/forget <key>`: Delete a stored fact.
 - `/forget all`: Clear all facts (requires `/forget all confirm`).
+- `/confirm [token | yes]`: Authorize and execute a staged tool action (e.g. writing a file to workspace).
+- `/cancel`: Abort and discard an active pending action.
 
-Each user's memories are strictly isolated by their unique WhatsApp JID (`whatsapp:<jid>`) mapped to their database record. Context retrieval deterministically caps included memories at 5 records and 600 total characters inside an untrusted reference block.
+Each user's memories and staged actions are strictly isolated by their unique WhatsApp JID (`whatsapp:<jid>`) mapped to their database record.
+
+### Controlled Tool Execution Framework (Phase 4B)
+
+When a user's question or instruction requires external computational tools:
+1. **Model Capability Detection**: Ollama models supporting native function calls invoke registered tools automatically.
+2. **Sandbox Guarantees**: File operations (`file_manager:read`, `file_manager:write`, `file_manager:list`) are restricted to `storage/workspace`. Traversal (`..`), drive letters (`C:`), and blacklisted extensions are strictly blocked.
+3. **Sensitive Tool Confirmation**: File modifications cannot execute autonomously. EDITH stages a `PendingAction` in SQLite (120-second TTL) and prompts the user for approval via `/confirm`.
 
 ---
 
@@ -217,10 +226,10 @@ Each user's memories are strictly isolated by their unique WhatsApp JID (`whatsa
 
 Run the complete regression test suite:
 ```bash
-# Python adaptive models, durability, long-term memory, and regression tests (103 tests)
-python -m pytest -v -p no:warnings
+# Python test suite: adaptive models, durability, memory, tools (156 passing tests)
+python -m pytest tests/ -W ignore
 
-# Node.js bridge security & queue tests
+# Node.js bridge security & queue tests (20 passing assertions)
 node whatsapp_bridge/test_bridge_security.js
 node whatsapp_bridge/test_bridge_queue.js
 ```

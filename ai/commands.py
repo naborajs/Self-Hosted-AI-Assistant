@@ -1,13 +1,18 @@
-from __future__ import annotations
-
+import json
 import logging
+import secrets
 import time
 from typing import Any
 
 from ai.client import OllamaClient
+from ai.tools import ToolRegistry
 from database.models import User
 from database.repository import (
+    cancel_pending_action,
+    consume_pending_action,
+    get_active_pending_action,
     get_user_preference,
+    record_failed_confirmation_attempt,
     resolve_effective_model,
     set_user_preference,
 )
@@ -27,7 +32,9 @@ def clear_pending_confirmations() -> None:
 SUPPORTED_COMMANDS = {
     "/models", "/model", "/language", "/style",
     "/remember", "/memories", "/forget", "/help",
+    "/confirm", "/cancel",
 }
+
 
 
 def is_user_authorized_for_model_switch(user: User, settings: Any) -> bool:
@@ -56,10 +63,13 @@ async def handle_user_command(
     ai_client: OllamaClient,
     settings: Any,
     memory_store: Any | None = None,
+    conversation_id: int | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> tuple[bool, str | None]:
-    """Inspect an incoming message. If it is a personalization, model, or memory command,
+    """Inspect an incoming message. If it is a personalization, model, memory, or tool confirmation command,
     process it idempotently and return (True, reply_text). Otherwise return (False, None).
     """
+
     if not text:
         return False, None
 
@@ -296,8 +306,91 @@ async def handle_user_command(
             return True, f"🗑️ Forgotten: **{clean_key}**"
         return True, f"⚠️ No memory found for key: **{clean_key}**"
 
+    # 8. /confirm - authorize and execute a pending tool action
+    if command == "/confirm":
+        action = await get_active_pending_action(user.id, conversation_id)
+        if not action:
+            return True, "⚠️ No pending action requires confirmation, or the confirmation window has expired."
 
-    # 8. /help - command reference
+        # If user submitted a token or affirmative keyword
+        if arg:
+            cleaned_arg = arg.strip().lower()
+            expected_token = (action.confirmation_token or "").lower()
+            if cleaned_arg in ("yes", "y", "confirm"):
+                # Authorized via explicit affirmative confirmation
+                authorized = True
+            elif secrets.compare_digest(cleaned_arg, expected_token):
+                # Authorized via exact matching token
+                authorized = True
+            else:
+                authorized = False
+                attempt_count, is_invalidated = await record_failed_confirmation_attempt(action.id)
+                if is_invalidated:
+                    return (
+                        True,
+                        "⛔ Confirmation failed: maximum attempt limit reached. The pending action has been cancelled.",
+                    )
+                remaining = max(0, action.max_attempts - attempt_count)
+                return (
+                    True,
+                    f"⚠️ Invalid confirmation token ({remaining} attempt{'s' if remaining != 1 else ''} remaining). "
+                    f"Reply with `/confirm <token>` or `/confirm yes` to authorize, or `/cancel` to decline.",
+                )
+        else:
+            # User sent bare '/confirm' without argument - describe action and prompt for explicit confirmation
+            return (
+                True,
+                f"⚠️ **Confirmation Required:**\n"
+                f"EDITH is waiting for your authorization to execute:\n"
+                f"• **Action**: {action.summary}\n"
+                f"• **Tool**: `{action.tool_name}`\n\n"
+                f"To authorize, reply with `/confirm yes` or `/confirm {action.confirmation_token}`.\n"
+                f"To decline, reply with `/cancel`.\n"
+                f"*(This authorization request expires in 2 minutes.)*",
+            )
+
+        consumed = await consume_pending_action(action.id, user_id=user.id, conversation_id=conversation_id)
+        if not consumed:
+            return True, "⚠️ Action has already been processed or expired."
+
+        registry = tool_registry or ToolRegistry(settings)
+        arguments = {}
+        if action.arguments_json:
+            try:
+                arguments = json.loads(action.arguments_json)
+            except Exception:
+                arguments = {}
+
+        logger.info(
+            "Executing confirmed action id=%d tool='%s' for user=%d conv=%s",
+            action.id,
+            action.tool_name,
+            user.id,
+            conversation_id,
+        )
+        exec_result = await registry.execute_tool(action.tool_name, arguments)
+        if exec_result.success:
+            return (
+                True,
+                f"✅ **Action Confirmed and Executed:**\n{action.summary}\n\n**Result:**\n{exec_result.output}",
+            )
+        return (
+            True,
+            f"❌ **Action Confirmed but Execution Failed:**\n{exec_result.error or exec_result.output}",
+        )
+
+    # 9. /cancel - abort an active pending tool action
+    if command == "/cancel":
+        action = await get_active_pending_action(user.id, conversation_id)
+        if not action:
+            return True, "ℹ️ No pending action to cancel."
+
+        cancelled = await cancel_pending_action(action.id, user_id=user.id, conversation_id=conversation_id)
+        if cancelled:
+            return True, f"🚫 **Action Cancelled:** Staged operation '{action.summary}' was aborted."
+        return True, "⚠️ Unable to cancel action (it may have already been consumed or expired)."
+
+    # 10. /help - command reference
     if command == "/help":
         help_text = (
             "🤖 **EDITH Assistant Commands:**\n\n"
@@ -310,8 +403,12 @@ async def handle_user_command(
             "• `/remember <key>=<value>` — Save a personal fact (e.g. `/remember city=Seattle`)\n"
             "• `/memories [query]` — View your saved memories\n"
             "• `/forget <key>` — Delete a saved memory\n"
-            "• `/forget all` — Clear all your saved memories"
+            "• `/forget all` — Clear all your saved memories\n\n"
+            "**Tool Actions & Confirmations:**\n"
+            "• `/confirm [token]` — Authorize and execute a staged action\n"
+            "• `/cancel` — Decline and cancel a staged action"
         )
         return True, help_text
+
 
     return False, None

@@ -13,10 +13,12 @@ from .models import (
     MemoryRecord,
     Message,
     OutboundMessage,
+    PendingAction,
     SystemSetting,
     User,
     UserPreference,
 )
+
 
 
 async def create_user(external_id: str, display_name: str, email: str | None = None, is_admin: bool = False) -> User:
@@ -1072,3 +1074,158 @@ async def resolve_effective_model(
         )
 
     return None, "none", "No model configured or selected. Please select an available model with /model <name>."
+
+
+# ============================================================================
+# Phase 4B: Pending Action Confirmation Repository Operations
+# ============================================================================
+
+async def create_pending_action(
+    user_id: int,
+    conversation_id: int,
+    action_type: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    summary: str,
+    ttl_seconds: float = 120.0,
+) -> PendingAction:
+    """Create a persistent pending action requiring explicit user confirmation.
+
+    Any existing pending actions for the same user and conversation are marked CANCELLED
+    to prevent ambiguity or conflicting executions.
+    """
+    import json
+    import secrets
+
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=ttl_seconds)
+    # 128-bit cryptographically secure random token (16 bytes = 32 hex chars)
+    token = secrets.token_hex(16)
+
+    async with get_session() as session:
+        await session.execute(
+            update(PendingAction)
+            .where(
+                PendingAction.user_id == user_id,
+                PendingAction.conversation_id == conversation_id,
+                PendingAction.status == "PENDING",
+            )
+            .values(status="CANCELLED", updated_at=now)
+        )
+        action = PendingAction(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            action_type=action_type,
+            tool_name=tool_name,
+            arguments_json=json.dumps(arguments),
+            summary=summary,
+            confirmation_token=token,
+            expires_at=expires,
+            status="PENDING",
+            attempt_count=0,
+            max_attempts=3,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(action)
+        await session.commit()
+        await session.refresh(action)
+        return action
+
+
+async def get_active_pending_action(user_id: int, conversation_id: int | None = None) -> PendingAction | None:
+    """Retrieve the active pending action for a user and optional conversation if not expired."""
+    now = datetime.utcnow()
+    conditions = [
+        PendingAction.user_id == user_id,
+        PendingAction.status == "PENDING",
+        PendingAction.expires_at > now,
+    ]
+    if conversation_id is not None:
+        conditions.append(PendingAction.conversation_id == conversation_id)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(PendingAction)
+            .where(*conditions)
+            .order_by(PendingAction.id.desc())
+        )
+        return result.scalars().first()
+
+
+async def record_failed_confirmation_attempt(action_id: int) -> tuple[int, bool]:
+    """Increment failed confirmation attempt count and cancel action if threshold is exceeded.
+
+    Returns (updated_attempt_count, is_cancelled).
+    """
+    now = datetime.utcnow()
+    async with get_session() as session:
+        result = await session.execute(
+            select(PendingAction).where(PendingAction.id == action_id)
+        )
+        action = result.scalars().first()
+        if not action:
+            return 0, False
+
+        action.attempt_count += 1
+        action.updated_at = now
+        is_cancelled = False
+        if action.attempt_count >= action.max_attempts and action.status == "PENDING":
+            action.status = "CANCELLED"
+            is_cancelled = True
+
+        await session.commit()
+        return action.attempt_count, is_cancelled
+
+
+async def consume_pending_action(
+    action_id: int,
+    user_id: int | None = None,
+    conversation_id: int | None = None,
+) -> bool:
+    """Atomically consume a pending action ensuring user and conversation bindings match."""
+    now = datetime.utcnow()
+    conditions = [
+        PendingAction.id == action_id,
+        PendingAction.status == "PENDING",
+        PendingAction.expires_at > now,
+    ]
+    if user_id is not None:
+        conditions.append(PendingAction.user_id == user_id)
+    if conversation_id is not None:
+        conditions.append(PendingAction.conversation_id == conversation_id)
+
+    async with get_session() as session:
+        result = await session.execute(
+            update(PendingAction)
+            .where(*conditions)
+            .values(status="CONSUMED", updated_at=now)
+        )
+        await session.commit()
+        return (result.rowcount or 0) > 0
+
+
+async def cancel_pending_action(
+    action_id: int,
+    user_id: int | None = None,
+    conversation_id: int | None = None,
+) -> bool:
+    """Atomically cancel a pending action ensuring user and conversation bindings match."""
+    now = datetime.utcnow()
+    conditions = [
+        PendingAction.id == action_id,
+        PendingAction.status == "PENDING",
+    ]
+    if user_id is not None:
+        conditions.append(PendingAction.user_id == user_id)
+    if conversation_id is not None:
+        conditions.append(PendingAction.conversation_id == conversation_id)
+
+    async with get_session() as session:
+        result = await session.execute(
+            update(PendingAction)
+            .where(*conditions)
+            .values(status="CANCELLED", updated_at=now)
+        )
+        await session.commit()
+        return (result.rowcount or 0) > 0
