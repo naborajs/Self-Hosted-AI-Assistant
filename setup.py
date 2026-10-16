@@ -6,7 +6,7 @@ setup(
     description="Self-hosted WhatsApp-first AI assistant powered by Ollama.",
     author="Local AI Team",
     python_requires=">=3.12",
-    packages=find_packages(include=["ai", "whatsapp", "telegram_gateway", "memory", "database", "tools", "api", "tests"]),
+    packages=find_packages(include=["ai", "whatsapp", "telegram_gateway", "memory", "database", "tools", "api", "edith", "tests"]),
     install_requires=[
         "fastapi>=0.110.0",
         "uvicorn[standard]>=0.23.0",
@@ -22,7 +22,15 @@ setup(
         "PyJWT>=2.8",
         "aiofiles>=23.0",
         "Jinja2>=3.1",
+        "click>=8.0",
+        "rich>=13.0",
+        "textual>=0.50.0",
     ],
+    entry_points={
+        "console_scripts": [
+            "edith=edith.cli:main",
+        ],
+    },
     classifiers=[
         "Programming Language :: Python :: 3.12",
         "Framework :: FastAPI",

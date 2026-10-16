@@ -29,6 +29,7 @@
 | `ALLOW_EXTERNAL_NETWORK_TOOLS` | Allow outbound network access for web search and weather tools | `true` |
 | `TOOL_WORKSPACE_ROOT` | Filesystem workspace directory for safe file tools | `./storage/workspace` |
 | `TOOL_DEFAULT_PERMISSION_POLICY` | Default permission policy (`standard` or `prompt`) | `standard` |
+| `ALLOW_REMOTE_API` | Allow binding API server to non-loopback network interfaces | `false` |
 
 ## Provisioning Administrator Credentials
 
@@ -165,3 +166,66 @@ EDITH implements a secure, sandboxed, capability-aware tool execution engine int
    - The action can be declined at any time:
      - `/cancel`
    - Double confirmations and replays are prevented via atomic row consumption.
+
+## Professional Terminal Interface & Operator Control (Phase 5A)
+
+EDITH provides a first-class terminal-first management suite including a command-line interface (`edith`) and an interactive full-screen terminal user interface (`edith tui`).
+
+### Operator Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `EDITH_API_URL` | Base URL of the EDITH FastAPI backend | `http://127.0.0.1:8000` |
+| `EDITH_ADMIN_TOKEN` | Pre-generated administrator JWT bearer token | None |
+| `EDITH_ADMIN_USERNAME` | Administrator username for automatic login | None |
+| `EDITH_ADMIN_PASSWORD` | Administrator password for automatic login | None |
+
+### Core CLI Commands
+
+- **System Health & Diagnosis**:
+  - `edith status`: Real-time system health, dependencies, and queue counters.
+  - `edith doctor`: Offline diagnostic audit of environment, storage, database, and reachability.
+  - `edith config check`: Sanity check active configuration with masked secrets.
+  - `edith version`: Version and operating platform metadata.
+  - `edith logs [-n LINES]`: View operational log tail.
+- **Model Management**:
+  - `edith models list [--refresh]`: Discover installed Ollama models.
+  - `edith models status`: Model routing configuration.
+  - `edith models default`: Current effective global default model.
+  - `edith models set-default <model>`: Set active global default model.
+  - `edith models refresh`: Force immediate discovery cache update.
+- **User & Memory Management**:
+  - `edith users list [--limit N] [--offset N]`: List registered messaging users with masked external IDs.
+  - `edith users show <user_id>`: Display detailed user metadata and routing preferences.
+  - `edith memory list --user <id>`: Inspect stored user facts.
+  - `edith memory search --user <id> <query>`: Search user facts.
+  - `edith memory save --user <id> <key> <value>`: Stash new long-term fact.
+  - `edith memory delete --user <id> <key> [-y]`: Delete fact with confirmation guard.
+- **AI Tools & Security Policy**:
+  - `edith tools list`: View active tools catalog, permissions, and confirmation requirements.
+  - `edith tools status`: Tool engine execution limits and status.
+  - `edith tools policy`: Bound parameters and sandbox constraints.
+  - `edith tools validate`: Check tool schema integrity.
+- **Message Queues & Delivery Diagnostics**:
+  - `edith queue status`: Backlog overview of inbound and outbound queues.
+  - `edith queue inbound`: Inspect recent inbound messages.
+  - `edith queue outbound`: Inspect recent outbound messages.
+  - `edith queue failed`: Display failed deliveries requiring attention.
+  - `edith queue ambiguous`: Display ambiguous deliveries halted to prevent duplicates.
+  - `edith queue retry <id> [-y]`: Safely requeue a failed/ambiguous message to PENDING.
+- **Messaging Integrations**:
+  - `edith integrations status`: Connection state for WhatsApp and Telegram gateways.
+  - `edith integrations whatsapp`: Detailed Baileys bridge connection and pairing status.
+  - `edith integrations telegram`: Detailed Bot API gateway status.
+- **Interactive Terminal User Interface**:
+  - `edith tui`: Launch interactive full-screen Textual dashboard.
+
+### Structured JSON Output
+
+Every command supports the `--json` flag (usable globally or at subcommand level) for scripting and automation:
+```bash
+edith status --json
+edith doctor --json
+edith models list --json
+edith queue failed --json
+```

@@ -125,9 +125,18 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
+    host = settings.app_host
+    if not settings.is_loopback_only and not settings.allow_remote_api:
+        logger.warning(
+            "APP_HOST=%s requested without ALLOW_REMOTE_API=True. "
+            "Binding to 127.0.0.1 for security.",
+            settings.app_host,
+        )
+        host = "127.0.0.1"
+
     uvicorn.run(
         "main:app",
-        host=settings.app_host,
+        host=host,
         port=settings.app_port,
         log_level=settings.log_level.lower(),
         reload=False,

@@ -1229,3 +1229,216 @@ async def cancel_pending_action(
         )
         await session.commit()
         return (result.rowcount or 0) > 0
+
+
+# ============================================================================
+# Phase 5A: Queue Statistics, User Listing & Diagnostic Queries
+# ============================================================================
+
+async def get_queue_statistics() -> dict[str, dict[str, int]]:
+    """Return aggregated count of inbound and outbound messages grouped by status."""
+    async with get_session() as session:
+        inbound_res = await session.execute(
+            select(InboundMessage.status, func.count(InboundMessage.id))
+            .group_by(InboundMessage.status)
+        )
+        inbound_counts = dict(inbound_res.all())
+
+        outbound_res = await session.execute(
+            select(OutboundMessage.status, func.count(OutboundMessage.id))
+            .group_by(OutboundMessage.status)
+        )
+        outbound_counts = dict(outbound_res.all())
+
+        return {
+            "inbound": {
+                "received": inbound_counts.get("RECEIVED", 0),
+                "processing": inbound_counts.get("PROCESSING", 0),
+                "response_ready": inbound_counts.get("RESPONSE_READY", 0),
+                "completed": inbound_counts.get("COMPLETED", 0),
+                "failed": inbound_counts.get("FAILED", 0),
+                "total": sum(inbound_counts.values()),
+            },
+            "outbound": {
+                "pending": outbound_counts.get("PENDING", 0),
+                "sending": outbound_counts.get("SENDING", 0),
+                "sent": outbound_counts.get("SENT", 0),
+                "failed": outbound_counts.get("FAILED", 0),
+                "ambiguous": outbound_counts.get("AMBIGUOUS", 0),
+                "total": sum(outbound_counts.values()),
+            },
+        }
+
+
+async def count_pending_actions() -> int:
+    """Return count of active (PENDING and not expired) pending actions."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        res = await session.execute(
+            select(func.count(PendingAction.id)).where(
+                PendingAction.status == "PENDING",
+                PendingAction.expires_at > now,
+            )
+        )
+        return res.scalar() or 0
+
+
+async def count_user_conversations(user_id: int) -> int:
+    """Return count of conversations belonging to a user."""
+    async with get_session() as session:
+        res = await session.execute(
+            select(func.count(Conversation.id)).where(Conversation.user_id == user_id)
+        )
+        return res.scalar() or 0
+
+
+
+async def list_registered_users(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Return a paginated list of registered users with conversation count and preferences."""
+    capped_limit = min(max(1, limit), 100)
+    async with get_session() as session:
+        stmt = (
+            select(
+                User,
+                func.count(Conversation.id).label("conversation_count"),
+                UserPreference.preferred_model,
+                UserPreference.preferred_language,
+                UserPreference.response_style,
+            )
+            .outerjoin(Conversation, Conversation.user_id == User.id)
+            .outerjoin(UserPreference, UserPreference.user_id == User.id)
+            .group_by(User.id)
+            .order_by(User.id.asc())
+            .offset(offset)
+            .limit(capped_limit)
+        )
+        res = await session.execute(stmt)
+        users = []
+        for row in res.all():
+            user, conv_count, pref_model, pref_lang, resp_style = row
+            users.append({
+                "id": user.id,
+                "external_id": user.external_id,
+                "display_name": user.display_name,
+                "email": user.email,
+                "is_admin": user.is_admin,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+                "conversation_count": conv_count,
+                "preferred_model": pref_model,
+                "preferred_language": pref_lang,
+                "response_style": resp_style,
+            })
+        return users
+
+
+async def list_diagnostic_inbound_messages(
+    status: str | None = None,
+    platform: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return bounded diagnostic view of inbound messages."""
+    capped_limit = min(max(1, limit), 100)
+    conditions = []
+    if status:
+        conditions.append(InboundMessage.status == status.upper())
+    if platform:
+        conditions.append(InboundMessage.platform == platform.lower())
+
+    async with get_session() as session:
+        stmt = (
+            select(InboundMessage)
+            .order_by(InboundMessage.id.desc())
+            .offset(offset)
+            .limit(capped_limit)
+        )
+        if conditions:
+            stmt = stmt.where(*conditions)
+        res = await session.execute(stmt)
+        messages = []
+        for msg in res.scalars().all():
+            messages.append({
+                "id": msg.id,
+                "platform": msg.platform,
+                "external_id": msg.external_id,
+                "chat_id": msg.chat_id,
+                "sender": msg.sender,
+                "sender_name": msg.sender_name,
+                "message_type": msg.message_type,
+                "status": msg.status,
+                "attempt_count": msg.attempt_count,
+                "last_error": msg.last_error,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                "updated_at": msg.updated_at.isoformat() if msg.updated_at else None,
+            })
+        return messages
+
+
+async def list_diagnostic_outbound_messages(
+    status: str | None = None,
+    platform: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return bounded diagnostic view of outbound messages."""
+    capped_limit = min(max(1, limit), 100)
+    conditions = []
+    if status:
+        conditions.append(OutboundMessage.status == status.upper())
+    if platform:
+        conditions.append(OutboundMessage.platform == platform.lower())
+
+    async with get_session() as session:
+        stmt = (
+            select(OutboundMessage)
+            .order_by(OutboundMessage.id.desc())
+            .offset(offset)
+            .limit(capped_limit)
+        )
+        if conditions:
+            stmt = stmt.where(*conditions)
+        res = await session.execute(stmt)
+        messages = []
+        for msg in res.scalars().all():
+            messages.append({
+                "id": msg.id,
+                "correlation_id": msg.correlation_id,
+                "platform": msg.platform,
+                "chat_id": msg.chat_id,
+                "status": msg.status,
+                "attempt_count": msg.attempt_count,
+                "max_attempts": msg.max_attempts,
+                "last_error": msg.last_error,
+                "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                "updated_at": msg.updated_at.isoformat() if msg.updated_at else None,
+            })
+        return messages
+
+
+async def retry_failed_outbound_message(outbound_id: int) -> dict[str, Any] | None:
+    """Safely reset a FAILED or AMBIGUOUS outbound delivery to PENDING."""
+    now = datetime.utcnow()
+    async with get_session() as session:
+        res = await session.execute(
+            select(OutboundMessage).where(OutboundMessage.id == outbound_id)
+        )
+        msg = res.scalars().first()
+        if not msg:
+            return None
+        if msg.status not in ("FAILED", "AMBIGUOUS"):
+            return None  # Only failed or ambiguous messages may be reset
+
+        msg.status = "PENDING"
+        msg.lease_expires_at = None
+        msg.last_error = f"Manual admin retry scheduled at {now.isoformat()}"
+        msg.updated_at = now
+        await session.commit()
+        await session.refresh(msg)
+        return {
+            "id": msg.id,
+            "correlation_id": msg.correlation_id,
+            "status": msg.status,
+            "attempt_count": msg.attempt_count,
+            "chat_id": msg.chat_id,
+        }

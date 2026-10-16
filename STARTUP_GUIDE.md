@@ -292,12 +292,63 @@ If a selected model is uninstalled or missing from the host machine, the system 
 All models must be installed on the host machine using `ollama pull <name>`.
 
 
+## Phase 5A: Terminal-First Management & Operator Control
+
+EDITH is an API-first local AI assistant managed directly from the terminal without any web dashboard bloat:
+
+### Command-Line Interface (`edith`)
+Install the package or CLI entrypoint:
+```bash
+pip install -e .
+```
+Or run directly via python module:
+```bash
+python -m edith <command>
+```
+
+#### Daily Operations:
+- **Health Check & Diagnostics**:
+  ```bash
+  edith status
+  edith doctor
+  ```
+- **Inspect Models & Set Default**:
+  ```bash
+  edith models list
+  edith models set-default mistral:latest
+  ```
+- **Manage Users & Long-Term Memories**:
+  ```bash
+  edith users list
+  edith memory list --user 1
+  ```
+- **Inspect Durable Message Queues**:
+  ```bash
+  edith queue status
+  edith queue failed
+  edith queue retry 10
+  ```
+- **Inspect Messaging Gateways**:
+  ```bash
+  edith integrations status
+  ```
+
+### Interactive Terminal Dashboard (`edith tui`)
+Launch the real-time Textual operator interface:
+```bash
+edith tui
+```
+Keyboard Shortcuts:
+- `r`: Refresh live backend data
+- `d`: Toggle dark/light terminal theme
+- `q`: Safe exit back to shell
+
 ## Next Steps
 
-1. Configure .env with your settings
+1. Configure `.env` with your settings (including `ADMIN_PASSWORD_HASH` and `SESSION_SECRET`).
 2. Start Ollama: `ollama serve`
 3. Run: `start.bat`
-4. Scan QR code on http://127.0.0.1:3000/qr-display
-5. Send test message to WhatsApp number
-6. Receive AI response
-7. Check http://127.0.0.1:8000/health for system status
+4. Verify system with: `edith doctor`
+5. Scan QR code on http://127.0.0.1:3000/qr-display
+6. Send test message to WhatsApp or Telegram
+7. Monitor queues and models via `edith tui` or `edith status`

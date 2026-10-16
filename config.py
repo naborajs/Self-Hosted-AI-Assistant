@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     tool_workspace_root: Path = Field(default_factory=lambda: Path.cwd() / "storage" / "workspace")
     tool_default_permission_policy: str = Field("standard", env="TOOL_DEFAULT_PERMISSION_POLICY")
 
+    # Phase 5A: Integration & Network Security Configuration
+    allow_remote_api: bool = Field(False, env="ALLOW_REMOTE_API")
+
     class Config:
 
         env_file = ".env"
@@ -77,6 +80,11 @@ class Settings(BaseSettings):
         if not self.cors_origins:
             return []
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+
+    @property
+    def is_loopback_only(self) -> bool:
+        host = self.app_host.lower().strip()
+        return host in ("127.0.0.1", "localhost", "::1")
 
 
 settings = Settings()

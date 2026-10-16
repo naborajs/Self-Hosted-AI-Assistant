@@ -275,6 +275,11 @@ class ToolRegistry:
                 res.append(name)
         return res
 
+    def get_tool_definitions(self) -> list[ToolDefinition]:
+        """Return list of registered ToolDefinition objects."""
+        return list(self._tools.values())
+
+
     @property
     def tools(self) -> dict[str, Callable[..., Any]]:
         """Legacy dictionary access for backward compatibility."""

@@ -14,17 +14,19 @@ A privacy-first, local AI assistant platform for WhatsApp, Telegram, and Ollama.
 
 ---
 
-## Features
-
-- Local Ollama-powered AI inference
+- Local Ollama-powered AI inference with dynamic discovery and non-silent fallback
+- Controlled AI tool execution framework with sandboxed workspace and human-in-the-loop confirmation
 - WhatsApp companion device bridge integration
 - Telegram chat gateway support
+- Durable SQLite WAL messaging inbox and delivery queue with crash recovery
+- Long-term memory store with deterministic relevance retrieval and injection protection
+- Professional Terminal Interface (`edith` CLI) with `--json` automation output
+- Interactive real-time Terminal UI dashboard (`edith tui`)
 - AI identity and personality management
 - Global and platform-specific system prompts
 - Preset reply engine with exact, keyword, and regex match
 - Knowledge base and training import system
-- Memory management for short-term and long-term context
-- Admin API for runtime configuration
+- Admin API for runtime configuration with loopback-only default exposure
 - Backup and restore for AI state
 - Secure admin access and health monitoring
 
@@ -93,6 +95,15 @@ python main.py
 ```
 
 6. Open `http://127.0.0.1:8000/docs` for API access.
+
+7. Manage the assistant using the terminal CLI & TUI:
+
+```bash
+pip install -e .
+edith doctor       # Diagnostic sanity check
+edith status       # Operational overview
+edith tui          # Interactive terminal UI
+```
 
 ## WhatsApp Setup
 
