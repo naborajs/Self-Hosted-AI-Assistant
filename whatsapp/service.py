@@ -10,6 +10,7 @@ import httpx
 from ai.client import OllamaClient
 from ai.conversation import ConversationContext
 from ai.manager import AIManager
+from ai.processor import execute_conversation_turn
 from config import settings
 from database.models import InboundMessage, OutboundMessage
 from database.repository import (
@@ -383,134 +384,28 @@ class WhatsAppGateway:
         try:
             # Stage 1: Check if answer was already generated prior to an interruption
             answer = record.response_text
+            turn = None
             if not answer or record.status != "RESPONSE_READY":
+                await self.send_typing(chat_id)
                 external_id = f"whatsapp:{sender}"
-                app_user = await get_or_create_user(external_id, sender_name)
-                conversation = await get_conversation(app_user.id, chat_id)
-                if conversation is None:
-                    conversation = await create_conversation(app_user.id, chat_id, title=chat_id)
-
-                await save_message(conversation.id, sender, "user", content, message_type)
-
-                # 1. Command Interception (/models, /model, /language, /style, /remember, /memories, /forget, /help, /confirm, /cancel)
-                is_command, command_reply = await handle_user_command(
-                    app_user,
-                    content,
-                    self.ai_client,
-                    self.settings,
-                    self.memory_store,
-                    conversation_id=conversation.id,
+                turn = await execute_conversation_turn(
+                    external_id=external_id,
+                    sender_name=sender_name,
+                    chat_id=chat_id,
+                    content=content,
+                    platform="whatsapp",
+                    sender_id=sender,
+                    message_type=message_type,
+                    ai_client=self.ai_client,
+                    ai_manager=self.ai_manager,
+                    memory_store=self.memory_store,
                     tool_registry=self.tool_registry,
+                    tool_orchestrator=self.tool_orchestrator,
+                    app_settings=self.settings,
                 )
-                if is_command:
-                    answer = command_reply or ""
-                else:
-                    # 2. Preset Rule Matching
-                    preset_answer = self.ai_manager.match_preset(content)
-                    if preset_answer:
-                        answer = preset_answer
-                    else:
-                        # 3. Model Resolution & Personalized Inference
-                        pref = await get_user_preference(app_user.id)
-                        pref_lang = pref.preferred_language if pref else None
-                        pref_style = pref.response_style if pref else None
-
-                        model_names = []
-                        is_reachable = True
-                        try:
-                            installed_models = await self.ai_client.get_installed_models()
-                            if isinstance(installed_models, (list, tuple)):
-                                model_names = [m.name for m in installed_models if hasattr(m, "name")]
-                                if not model_names:
-                                    avail_result = await self.ai_client.is_ollama_available()
-                                    is_reachable = bool(avail_result) if isinstance(avail_result, bool) else True
-                            else:
-                                model_names = [getattr(self.settings, "ollama_model", "qwen3:8b")]
-                        except Exception:
-                            is_reachable = False
-
-                        effective_model, source, model_error = await resolve_effective_model(
-                            app_user.id,
-                            model_names,
-                            default_env_model=getattr(self.settings, "ollama_model", "qwen3:8b"),
-                            ollama_reachable=is_reachable,
-                        )
-
-                        if model_error:
-                            answer = f"⚠️ {model_error}"
-                        else:
-                            context = ConversationContext(
-                                conversation.id,
-                                self.ai_manager,
-                                memory_store=self.memory_store,
-                                user_id=app_user.id,
-                            )
-                            await self.send_typing(chat_id)
-
-                            # Check if ai_client was mocked in tests with a custom mock or generate method
-                            is_mock_generate = (
-                                type(self.ai_client).__name__ in ("AsyncMock", "MagicMock", "Mock")
-                                or hasattr(getattr(self.ai_client, "generate", None), "assert_called")
-                                or hasattr(getattr(self.ai_client, "generate", None), "assert_not_called")
-                            ) and not getattr(self.ai_client, "_test_tool_orchestration", False)
-
-                            if getattr(self.settings, "enable_tool_execution", True) and not is_mock_generate:
-
-                                system_context = self.ai_manager.build_system_context(platform="whatsapp", user_name=sender_name)
-                                knowledge = self.ai_manager.search_knowledge(content)
-                                history = await context.load_history()
-                                mem_facts: list[str] = []
-                                if self.memory_store:
-                                    try:
-                                        facts = await self.memory_store.retrieve_relevant_facts(
-                                            user_id=app_user.id,
-                                            query_text=content,
-                                            max_count=5,
-                                            max_chars=600,
-                                        )
-                                        for f in facts:
-                                            clean_val = str(f.value).replace("\n", " ").strip()
-                                            mem_facts.append(f"- {f.key}: {clean_val}")
-                                    except Exception as exc:
-                                        logger.warning("Memory retrieval in whatsapp gateway failed: %s", exc)
-
-                                self.tool_orchestrator.ai_client = self.ai_client
-                                answer = await self.tool_orchestrator.run_turn(
-                                    user_id=app_user.id,
-                                    conversation_id=conversation.id,
-                                    user_message=content,
-                                    system_context=system_context,
-                                    history=history,
-                                    model=effective_model,
-                                    user_name=sender_name,
-                                    platform="whatsapp",
-                                    preferred_language=pref_lang,
-                                    response_style=pref_style,
-                                    knowledge_snippets=knowledge,
-                                    user_memories=mem_facts,
-                                )
-                            else:
-                                prompt = await context.build_prompt(
-                                    platform="whatsapp",
-                                    user_name=sender_name,
-                                    user_message=content,
-                                    preferred_language=pref_lang,
-                                    response_style=pref_style,
-                                    user_id=app_user.id,
-                                )
-                                prompt += "\nAssistant:"
-
-                                try:
-                                    answer = await self.ai_client.generate(prompt, model=effective_model)
-                                except TypeError as te:
-                                    if "unexpected keyword argument 'model'" in str(te) or "got an unexpected keyword argument" in str(te):
-                                        answer = await self.ai_client.generate(prompt)
-                                    else:
-                                        raise
-
-                            if not answer or not answer.strip():
-                                raise ValueError("Empty response received from AI model")
-
+                answer = turn.response
+                if not answer or not answer.strip():
+                    raise ValueError("Empty response received from AI model")
 
                 # Durably persist generated answer before queuing delivery
                 await mark_inbound_response_ready(record.id, answer)
@@ -527,6 +422,8 @@ class WhatsAppGateway:
             if existing_outbound and existing_outbound.message_id:
                 # Assistant message was already saved prior to an interruption - do not duplicate
                 assistant_msg_id = existing_outbound.message_id
+            elif turn and turn.assistant_message_id:
+                assistant_msg_id = turn.assistant_message_id
             elif conversation is not None:
                 assistant_msg = await save_message(conversation.id, "assistant", "assistant", answer)
                 assistant_msg_id = assistant_msg.id

@@ -227,3 +227,81 @@ edith doctor --json
 edith models list --json
 edith queue failed --json
 ```
+
+## Machine-Facing Chat API (Phase 5B)
+
+Project EDITH provides an authenticated, machine-facing REST API for external scripts, tools, and background processes to converse with EDITH without relying on WhatsApp or Telegram.
+
+### Endpoints
+- Canonical: `POST /api/chat`
+- Root Versioned Alias: `POST /v1/chat`
+- Path Alias: `POST /api/v1/chat`
+
+### Authentication
+Requests require authentication using either:
+1. **Pre-Shared API Key**: Pass `X-API-Key: <key>` header matching any key configured in `API_KEYS` in `.env`.
+2. **JWT Bearer Token**: Pass `Authorization: Bearer <jwt_token>` header obtained from `POST /api/auth/token`.
+
+### Client Isolation
+Each machine client's conversation history, user preferences, and long-term memory are completely isolated:
+- Identity is namespaced to `api:<client_id>` (derived from the API key fingerprint or JWT subject).
+- Distinct clients cannot view or poison each other's memories or conversations.
+
+### Request Body Schema
+```json
+{
+  "message": "Hello EDITH, what is your status?",
+  "conversation_id": "optional-thread-identifier",
+  "model": "optional-explicit-model-name"
+}
+```
+- `message` (string, required): 1 to 4,096 characters.
+- `conversation_id` (string, optional): Client thread identifier. Defaults to `"default"`.
+- `model` (string, optional): Override the active/default Ollama model for this specific request. Must be currently installed in Ollama.
+
+### Response Body Schema
+```json
+{
+  "status": "success",
+  "response": "Hello! Project EDITH is operating normally.",
+  "conversation_id": "optional-thread-identifier",
+  "model_used": "qwen3:8b",
+  "correlation_id": "chat-7b2a9f14c0e35189",
+  "created_at": "2026-10-16T18:30:00.000000+00:00"
+}
+```
+
+### HTTP Status Codes
+- `200 OK`: Request succeeded, response returned.
+- `400 Bad Request`: Requested explicit model is not installed in Ollama.
+- `401 Unauthorized`: Missing or invalid API key or Bearer token.
+- `422 Unprocessable Entity`: Request body validation failed (e.g. empty or oversized message).
+- `503 Service Unavailable`: Ollama service is unreachable or offline.
+
+### Usage Examples
+
+**cURL with API Key:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: secret-alpha-key-999" \
+  -d '{"message": "What models are available?", "conversation_id": "automation-task-1"}'
+```
+
+**Python with `httpx`:**
+```python
+import httpx
+
+response = httpx.post(
+    "http://127.0.0.1:8000/api/chat",
+    headers={"X-API-Key": "secret-alpha-key-999"},
+    json={
+        "message": "Summarize my latest findings.",
+        "conversation_id": "report-thread",
+        "model": "qwen3:8b",
+    },
+    timeout=30.0,
+)
+data = response.json()
+print("EDITH:", data["response"])
+```

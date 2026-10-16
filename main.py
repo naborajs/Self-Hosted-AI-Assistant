@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from api.middleware import RateLimitMiddleware
 from config import settings
-from api.routes import api_router
+from api.routes import api_router, v1_router
 from database.connection import init_db, shutdown_db
 from whatsapp.service import WhatsAppGateway
 from telegram_gateway.bot import TelegramGateway
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
 
     app.include_router(api_router, prefix="/api")
+    app.include_router(v1_router)
 
     app.state.memory = MemoryStore(settings)
     app.state.ai_manager = AIManager(settings.storage_path)

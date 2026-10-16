@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, Header, HTTPException, Request, Security, status
 from fastapi.security import OAuth2PasswordBearer, SecurityScopes
 
 from config import settings
@@ -77,4 +78,38 @@ async def get_current_user(security_scopes: SecurityScopes, token: str = Depends
         raise credentials_exception
     user = {"username": username, "scopes": ["admin"]}
     return user
+
+
+async def get_machine_client(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
+) -> dict[str, Any]:
+    """Authenticate machine clients via X-API-Key header or Bearer JWT token."""
+    # 1. Check API Key
+    if x_api_key:
+        configured_keys = settings.valid_api_keys
+        for configured_entry in configured_keys:
+            expected_secret = configured_entry
+            client_id = "machine_client"
+            if ":" in configured_entry:
+                client_id, expected_secret = configured_entry.split(":", 1)
+            if secrets.compare_digest(x_api_key.strip(), expected_secret.strip()):
+                return {"client_id": client_id, "auth_type": "api_key"}
+
+    # 2. Check Bearer Token
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            client_id = payload.get("sub", "api_client")
+            return {"client_id": client_id, "auth_type": "bearer", "scopes": payload.get("scopes", [])}
+        except jwt.PyJWTError:
+            pass
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide a valid X-API-Key header or Bearer token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 

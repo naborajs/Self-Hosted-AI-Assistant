@@ -1,11 +1,16 @@
+import logging
+import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from typing import Any, List, Literal
 
-from api.security import authenticate_admin, create_access_token, get_current_user
+logger = logging.getLogger(__name__)
+
+from api.security import authenticate_admin, create_access_token, get_current_user, get_machine_client
 from ai.client import OllamaClient
+from ai.processor import execute_conversation_turn
 from ai.tools import ToolRegistry
 from config import settings
 from database.repository import (
@@ -27,6 +32,7 @@ from database.repository import (
 from memory.store import MemoryStore, get_memory_store
 
 api_router = APIRouter()
+v1_router = APIRouter(prefix="/v1")
 
 
 class WhatsAppPairRequest(BaseModel):
@@ -1216,3 +1222,106 @@ async def retry_outbound_delivery(
             detail=f"Outbound message {message_id} not found or not in a retryable state (FAILED or AMBIGUOUS)",
         )
     return {"status": "requeued", "message": result}
+
+
+# ============================================================================
+# Machine-Facing Application Chat API (Phase 5B)
+# ============================================================================
+
+class MachineChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4096, description="User message content")
+    conversation_id: str | None = Field(None, max_length=128, description="Client conversation/thread identifier")
+    model: str | None = Field(None, max_length=128, description="Optional installed Ollama model override")
+
+
+class MachineChatResponse(BaseModel):
+    status: str = "success"
+    response: str
+    conversation_id: str
+    model_used: str | None = None
+    correlation_id: str
+    created_at: str
+
+
+@api_router.post("/chat", response_model=MachineChatResponse, tags=["Machine Chat"])
+@api_router.post("/v1/chat", response_model=MachineChatResponse, tags=["Machine Chat"])
+async def machine_chat_endpoint(
+    request: Request,
+    payload: MachineChatRequest,
+    client: dict = Depends(get_machine_client),
+):
+    """Authenticated machine-facing endpoint to submit a message to EDITH and receive a response.
+
+    Supports authentication via:
+    - `X-API-Key: <key>` header (configured in API_KEYS)
+    - `Authorization: Bearer <jwt_token>` header
+
+    Reuses the unified conversation pipeline:
+    - User/client identity isolation (keyed to `api:<client_id>`)
+    - Long-term memory context retrieval with injection guards
+    - Autonomous tool calling with sandboxed execution
+    - Dynamic Ollama model selection with non-silent failure guarantees
+    """
+    correlation_id = f"chat-{secrets.token_hex(8)}"
+    client_id = client.get("client_id", "default_client")
+    external_id = f"api:{client_id}"
+    chat_id = payload.conversation_id or "default"
+
+    # Use app.state components if initialized
+    ai_client = getattr(request.app.state, "ai_client", None)
+    ai_manager = getattr(request.app.state, "ai_manager", None)
+    memory_store = getattr(request.app.state, "memory", None)
+    tool_registry = getattr(request.app.state, "tool_registry", None)
+    tool_orchestrator = getattr(request.app.state, "tool_orchestrator", None)
+
+    try:
+        turn = await execute_conversation_turn(
+            external_id=external_id,
+            sender_name=client_id,
+            chat_id=chat_id,
+            content=payload.message,
+            platform="api",
+            explicit_model=payload.model,
+            ai_client=ai_client,
+            ai_manager=ai_manager,
+            memory_store=memory_store,
+            tool_registry=tool_registry,
+            tool_orchestrator=tool_orchestrator,
+            app_settings=settings,
+        )
+    except Exception as exc:
+        logger.exception("Chat processing error: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing the chat turn.",
+        )
+
+    if turn.is_error:
+        if "not installed" in (turn.error_detail or ""):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=turn.error_detail,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=turn.error_detail or "Inference service unavailable",
+        )
+
+    return MachineChatResponse(
+        status="success",
+        response=turn.response,
+        conversation_id=chat_id,
+        model_used=turn.model_used,
+        correlation_id=correlation_id,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@v1_router.post("/chat", response_model=MachineChatResponse, tags=["Machine Chat"])
+async def v1_chat_direct_endpoint(
+    request: Request,
+    payload: MachineChatRequest,
+    client: dict = Depends(get_machine_client),
+):
+    """Direct alias for /v1/chat matching /api/chat."""
+    return await machine_chat_endpoint(request, payload, client)

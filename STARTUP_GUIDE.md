@@ -16,7 +16,7 @@
 - Improved Ollama response validation
 - Added logging for debugging
 
-### 4. telegram/bot.py
+### 4. telegram_gateway/bot.py
 - Added comprehensive error handling in `handle_message()`
 - Added error recovery with user feedback
 - Improved Ollama response validation
@@ -333,12 +333,35 @@ python -m edith <command>
   edith integrations status
   ```
 
+### Machine-Facing Chat API (Phase 5B)
+
+For integration with scripts, schedulers, and developer tools:
+
+```bash
+# Test chat via curl using pre-shared API key
+curl -X POST http://127.0.0.1:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key-from-env" \
+  -d "{\"message\": \"Hello EDITH!\"}"
+```
+
+Available endpoint paths:
+- `POST /api/chat` (canonical)
+- `POST /v1/chat` (root versioned alias)
+- `POST /api/v1/chat` (path alias)
+
+### Data Storage Architecture
+- **Primary Database**: SQLite database configured via `DATABASE_URL` (default: `./assistant.db`). Contains users, conversations, messages, durable inbox/outbound queues, user preferences, and long-term memories.
+- **WhatsApp Bridge Storage**: `storage/whatsapp_bridge/` contains Baileys session multi-file authentication state and encryption keys.
+- **AI Identity & Presets**: `storage/ai_identity.json`, `storage/presets.json`, `storage/rules.json`.
+- **Tool Workspace Root**: `storage/workspace/` (sandboxed file directory for AI tool execution).
+
 ## Next Steps
 
-1. Configure `.env` with your settings (including `ADMIN_PASSWORD_HASH` and `SESSION_SECRET`).
+1. Configure `.env` with your settings (including `ADMIN_PASSWORD_HASH`, `SESSION_SECRET`, and optional `API_KEYS`).
 2. Start Ollama: `ollama serve`
 3. Run: `start.bat`
 4. Verify system with: `edith doctor`
-5. Scan QR code on http://127.0.0.1:3000/qr-display
+5. Scan QR code on http://127.0.0.1:3000/qr-display (or test directly via `POST /api/chat`)
 6. Send test message to WhatsApp or Telegram
 7. Monitor queues and models via `edith status`

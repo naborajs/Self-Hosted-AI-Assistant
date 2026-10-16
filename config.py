@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Phase 5A: Integration & Network Security Configuration
     allow_remote_api: bool = Field(False, env="ALLOW_REMOTE_API")
 
+    # Phase 5B: Machine-Facing API Keys (comma-separated 'key' or 'client_id:key')
+    api_keys: Optional[SecretStr] = Field(None, env="API_KEYS")
+
     class Config:
 
         env_file = ".env"
@@ -85,6 +88,13 @@ class Settings(BaseSettings):
     def is_loopback_only(self) -> bool:
         host = self.app_host.lower().strip()
         return host in ("127.0.0.1", "localhost", "::1")
+
+    @property
+    def valid_api_keys(self) -> list[str]:
+        if not self.api_keys:
+            return []
+        raw = self.api_keys.get_secret_value() if hasattr(self.api_keys, "get_secret_value") else str(self.api_keys)
+        return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 settings = Settings()

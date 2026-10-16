@@ -26,18 +26,12 @@ A privacy-first, local AI assistant platform for WhatsApp, Telegram, and Ollama.
 - Preset reply engine with exact, keyword, and regex match
 - Knowledge base and training import system
 - Admin API for runtime configuration with loopback-only default exposure
+- Machine Chat API (`POST /api/chat`, `POST /v1/chat`) for local developer and automation integrations
 - Backup and restore for AI state
 - Secure admin access and health monitoring
 
-## Screenshots
-
-> Replace these placeholders with real screenshots after setup.
-
-![WhatsApp Screenshot](./assets/screenshot-whatsapp.png)
-![Telegram Screenshot](./assets/screenshot-telegram.png)
-![Admin UI Placeholder](./assets/screenshot-admin.png)
-
 ## Architecture Overview
+
 
 ```mermaid
 flowchart TD
