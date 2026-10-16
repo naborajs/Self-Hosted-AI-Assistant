@@ -333,16 +333,6 @@ python -m edith <command>
   edith integrations status
   ```
 
-### Interactive Terminal Dashboard (`edith tui`)
-Launch the real-time Textual operator interface:
-```bash
-edith tui
-```
-Keyboard Shortcuts:
-- `r`: Refresh live backend data
-- `d`: Toggle dark/light terminal theme
-- `q`: Safe exit back to shell
-
 ## Next Steps
 
 1. Configure `.env` with your settings (including `ADMIN_PASSWORD_HASH` and `SESSION_SECRET`).
@@ -351,4 +341,4 @@ Keyboard Shortcuts:
 4. Verify system with: `edith doctor`
 5. Scan QR code on http://127.0.0.1:3000/qr-display
 6. Send test message to WhatsApp or Telegram
-7. Monitor queues and models via `edith tui` or `edith status`
+7. Monitor queues and models via `edith status`

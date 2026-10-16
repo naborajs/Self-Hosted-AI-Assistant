@@ -21,7 +21,6 @@ A privacy-first, local AI assistant platform for WhatsApp, Telegram, and Ollama.
 - Durable SQLite WAL messaging inbox and delivery queue with crash recovery
 - Long-term memory store with deterministic relevance retrieval and injection protection
 - Professional Terminal Interface (`edith` CLI) with `--json` automation output
-- Interactive real-time Terminal UI dashboard (`edith tui`)
 - AI identity and personality management
 - Global and platform-specific system prompts
 - Preset reply engine with exact, keyword, and regex match
@@ -96,13 +95,12 @@ python main.py
 
 6. Open `http://127.0.0.1:8000/docs` for API access.
 
-7. Manage the assistant using the terminal CLI & TUI:
+7. Manage the assistant using the terminal CLI:
 
 ```bash
 pip install -e .
 edith doctor       # Diagnostic sanity check
 edith status       # Operational overview
-edith tui          # Interactive terminal UI
 ```
 
 ## WhatsApp Setup

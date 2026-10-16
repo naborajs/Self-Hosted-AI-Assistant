@@ -24,7 +24,6 @@ setup(
         "Jinja2>=3.1",
         "click>=8.0",
         "rich>=13.0",
-        "textual>=0.50.0",
     ],
     entry_points={
         "console_scripts": [

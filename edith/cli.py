@@ -853,18 +853,5 @@ def integrations_telegram_cmd(ctx: dict[str, Any]) -> None:
         print_panel("Telegram Integration Status", json.dumps(tg, indent=2))
 
 
-# ============================================================================
-# Interactive Terminal UI Launcher
-# ============================================================================
-
-@main.command("tui")
-@pass_context
-def tui_cmd(ctx: dict[str, Any]) -> None:
-    """Launch the interactive terminal user interface."""
-    from edith.terminal_ui import run_tui
-    client = get_client(ctx)
-    run_tui(client)
-
-
 if __name__ == "__main__":
     main()

@@ -169,7 +169,7 @@ EDITH implements a secure, sandboxed, capability-aware tool execution engine int
 
 ## Professional Terminal Interface & Operator Control (Phase 5A)
 
-EDITH provides a first-class terminal-first management suite including a command-line interface (`edith`) and an interactive full-screen terminal user interface (`edith tui`).
+EDITH provides a dependable, terminal-first management CLI (`edith`) with structured JSON support for scripting and automation.
 
 ### Operator Environment Variables
 
@@ -217,8 +217,6 @@ EDITH provides a first-class terminal-first management suite including a command
   - `edith integrations status`: Connection state for WhatsApp and Telegram gateways.
   - `edith integrations whatsapp`: Detailed Baileys bridge connection and pairing status.
   - `edith integrations telegram`: Detailed Bot API gateway status.
-- **Interactive Terminal User Interface**:
-  - `edith tui`: Launch interactive full-screen Textual dashboard.
 
 ### Structured JSON Output
 

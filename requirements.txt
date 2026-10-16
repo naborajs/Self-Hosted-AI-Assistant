@@ -19,4 +19,3 @@ typing-extensions>=4.8
 Jinja2>=3.1
 click>=8.0
 rich>=13.0
-textual>=0.50.0

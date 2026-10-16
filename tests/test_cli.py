@@ -219,7 +219,6 @@ def test_cli_help(runner):
     assert "tools" in result.output
     assert "queue" in result.output
     assert "integrations" in result.output
-    assert "tui" in result.output
 
 
 def test_cli_version(runner):
