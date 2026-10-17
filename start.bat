@@ -73,4 +73,6 @@ echo - WhatsApp Bridge: http://127.0.0.1:3000 (if npm installed)
 echo - WhatsApp Pairing: http://127.0.0.1:3000/qr-display
 echo ===============================================
 echo.
-pause
+if "%~1" neq "--no-pause" (
+    pause
+)

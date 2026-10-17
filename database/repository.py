@@ -1,7 +1,8 @@
-from __future__ import annotations
-
+import logging
 import re
 from datetime import datetime, timedelta
+
+logger = logging.getLogger("local_ai_assistant.database.repository")
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +61,32 @@ async def get_or_create_user(external_id: str, display_name: str, email: str | N
     if user is not None:
         return user
     return await create_user(external_id, display_name, email)
+
+
+async def resolve_machine_user(
+    external_id: str,
+    display_name: str,
+    legacy_external_id: str | None = None,
+) -> User:
+    """Resolve a machine user by external_id, gracefully upgrading legacy 8-char digest identities if present."""
+    user = await get_user_by_external_id(external_id)
+    if user is not None:
+        return user
+
+    if legacy_external_id and legacy_external_id != external_id:
+        legacy_user = await get_user_by_external_id(legacy_external_id)
+        if legacy_user is not None:
+            async with get_session() as session:
+                u = await session.get(User, legacy_user.id)
+                if u is not None:
+                    u.external_id = external_id
+                    u.display_name = display_name
+                    await session.commit()
+                    await session.refresh(u)
+                    logger.info("Migrated machine client identity from legacy %s to %s", legacy_external_id, external_id)
+                    return u
+
+    return await create_user(external_id, display_name)
 
 
 async def create_conversation(user_id: int, external_chat_id: str, title: str | None = None, conversation_metadata: str | None = None) -> Conversation:

@@ -94,11 +94,19 @@ async def get_machine_client(
             expected_secret = configured_entry
             if ":" in configured_entry:
                 client_id, expected_secret = configured_entry.split(":", 1)
-                client_id = client_id.strip() or f"client_{hashlib.sha256(expected_secret.strip().encode()).hexdigest()[:8]}"
+                full_hash = hashlib.sha256(expected_secret.strip().encode()).hexdigest()
+                client_id = client_id.strip() or f"client_{full_hash}"
+                legacy_client_id = None
             else:
-                client_id = f"client_{hashlib.sha256(expected_secret.strip().encode()).hexdigest()[:8]}"
+                full_hash = hashlib.sha256(expected_secret.strip().encode()).hexdigest()
+                client_id = f"client_{full_hash}"
+                legacy_client_id = f"client_{full_hash[:8]}"
             if secrets.compare_digest(x_api_key.strip(), expected_secret.strip()):
-                return {"client_id": client_id, "auth_type": "api_key"}
+                return {
+                    "client_id": client_id,
+                    "auth_type": "api_key",
+                    "legacy_client_id": legacy_client_id,
+                }
 
     # 2. Check Bearer Token
     if authorization and authorization.startswith("Bearer "):

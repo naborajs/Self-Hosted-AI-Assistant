@@ -134,12 +134,25 @@ async def execute_conversation_turn(
 
     if explicit_model:
         clean_model = explicit_model.strip()
+        if not is_reachable:
+            err_msg = "Ollama service is currently unreachable and model availability cannot be verified. Please ensure Ollama is running."
+            saved_msg = await save_message(conversation.id, "assistant", "assistant", f"⚠️ {err_msg}")
+            return TurnResult(
+                response=f"⚠️ {err_msg}",
+                model_used=clean_model,
+                conversation_id=conversation.id,
+                user_id=app_user.id,
+                assistant_message_id=getattr(saved_msg, "id", None),
+                is_error=True,
+                error_detail=err_msg,
+            )
         is_installed = any(
             m == clean_model or m.split(":")[0] == clean_model
             for m in model_names
         )
-        if not is_installed and model_names:
-            err_msg = f"Requested model '{clean_model}' is not installed in Ollama. Available models: {', '.join(model_names)}"
+        if not is_installed:
+            avail_str = f" Available models: {', '.join(model_names)}" if model_names else " No models currently installed."
+            err_msg = f"Requested model '{clean_model}' is not installed in Ollama.{avail_str}"
             saved_msg = await save_message(conversation.id, "assistant", "assistant", f"⚠️ {err_msg}")
             return TurnResult(
                 response=f"⚠️ {err_msg}",
@@ -207,39 +220,53 @@ async def execute_conversation_turn(
         or hasattr(getattr(client, "generate", None), "assert_not_called")
     ) and not getattr(client, "_test_tool_orchestration", False)
 
-    if getattr(cfg, "enable_tool_execution", True) and not is_mock_generate:
-        answer = await orchestrator.run_turn(
-            user_id=app_user.id,
+    try:
+        if getattr(cfg, "enable_tool_execution", True) and not is_mock_generate:
+            answer = await orchestrator.run_turn(
+                user_id=app_user.id,
+                conversation_id=conversation.id,
+                user_message=content,
+                system_context=system_context,
+                history=history,
+                model=effective_model,
+                user_name=sender_name,
+                platform=platform,
+                preferred_language=pref_lang,
+                response_style=pref_style,
+                knowledge_snippets=knowledge,
+                user_memories=mem_facts,
+            )
+        else:
+            prompt = await context.build_prompt(
+                platform=platform,
+                user_name=sender_name,
+                user_message=content,
+                preferred_language=pref_lang,
+                response_style=pref_style,
+                user_id=app_user.id,
+            )
+            try:
+                answer = await client.generate(prompt=prompt, model=effective_model)
+            except TypeError as te:
+                if "unexpected keyword argument" in str(te):
+                    answer = await client.generate(prompt=prompt)
+                else:
+                    raise
+            if not answer or not str(answer).strip():
+                answer = "I couldn't generate a response. Please check that Ollama is running."
+    except Exception as exc:
+        logger.warning("Inference execution failed: %s", exc)
+        err_msg = "Inference execution failed or Ollama is unavailable."
+        saved_msg = await save_message(conversation.id, "assistant", "assistant", f"⚠️ {err_msg}")
+        return TurnResult(
+            response=f"⚠️ {err_msg}",
+            model_used=effective_model,
             conversation_id=conversation.id,
-            user_message=content,
-            system_context=system_context,
-            history=history,
-            model=effective_model,
-            user_name=sender_name,
-            platform=platform,
-            preferred_language=pref_lang,
-            response_style=pref_style,
-            knowledge_snippets=knowledge,
-            user_memories=mem_facts,
-        )
-    else:
-        prompt = await context.build_prompt(
-            platform=platform,
-            user_name=sender_name,
-            user_message=content,
-            preferred_language=pref_lang,
-            response_style=pref_style,
             user_id=app_user.id,
+            assistant_message_id=getattr(saved_msg, "id", None),
+            is_error=True,
+            error_detail=str(exc) or err_msg,
         )
-        try:
-            answer = await client.generate(prompt=prompt, model=effective_model)
-        except TypeError as te:
-            if "unexpected keyword argument" in str(te):
-                answer = await client.generate(prompt=prompt)
-            else:
-                raise
-        if not answer or not str(answer).strip():
-            answer = "I couldn't generate a response. Please check that Ollama is running."
 
     # 8. Record assistant response
     saved_msg = await save_message(conversation.id, "assistant", "assistant", answer)

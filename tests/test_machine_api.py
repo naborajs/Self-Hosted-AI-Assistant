@@ -361,16 +361,102 @@ async def test_machine_api_unnamed_api_keys_isolation():
             )
             assert resp2.status_code == 200
 
-            # Verify that two distinct users were created in SQLite
+            # Verify that two distinct collision-resistant users (256-bit SHA-256) were created in SQLite
             import hashlib
             from database.repository import get_user_by_external_id
-            id1 = f"api:client_{hashlib.sha256(b'raw-secret-key-1').hexdigest()[:8]}"
-            id2 = f"api:client_{hashlib.sha256(b'raw-secret-key-2').hexdigest()[:8]}"
+            id1 = f"api:client_{hashlib.sha256(b'raw-secret-key-1').hexdigest()}"
+            id2 = f"api:client_{hashlib.sha256(b'raw-secret-key-2').hexdigest()}"
+            assert len(id1) == 4 + 7 + 64  # "api:client_" + 64 hex chars
+            assert len(id2) == 4 + 7 + 64
             u1 = await get_user_by_external_id(id1)
             u2 = await get_user_by_external_id(id2)
             assert u1 is not None
             assert u2 is not None
             assert u1.id != u2.id
+    finally:
+        await shutdown_db()
+        for suffix in ("", "-wal", "-shm"):
+            p = f"{path}{suffix}"
+            if os.path.exists(p):
+                with contextlib.suppress(Exception):
+                    os.remove(p)
+
+
+@pytest.mark.asyncio
+async def test_machine_api_legacy_identity_migration_and_continuity():
+    """Verify that existing legacy (32-bit/8-hex) client user records are seamlessly upgraded to full 256-bit SHA-256 without data loss."""
+    import hashlib
+    from pydantic import SecretStr
+    from database.repository import (
+        create_user,
+        create_conversation,
+        save_message,
+        list_messages,
+        get_user_by_external_id,
+    )
+    from memory.store import MemoryStore
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    db_url = f"sqlite+aiosqlite:///{path}"
+    test_settings = Settings(
+        app_host="127.0.0.1",
+        app_port=8000,
+        whatsapp_phone="+1234567890",
+        telegram_bot_token="test_token",
+        database_url=db_url,
+        session_secret="legacy_migration_test_secret_1234567890",
+        admin_users="admin@example.com",
+        storage_path=tempfile.gettempdir(),
+        api_keys=SecretStr("migrating-client-key"),
+        ollama_model="qwen3:8b",
+        enable_tool_execution=False,
+    )
+    await init_db(test_settings)
+    try:
+        raw_key = b"migrating-client-key"
+        legacy_ext_id = f"api:client_{hashlib.sha256(raw_key).hexdigest()[:8]}"
+        full_ext_id = f"api:client_{hashlib.sha256(raw_key).hexdigest()}"
+
+        # 1. Pre-seed a legacy user record as if created in Phase 5C
+        legacy_user = await create_user(legacy_ext_id, "legacy_client_name")
+        conv = await create_conversation(legacy_user.id, "legacy_thread")
+        await save_message(conv.id, "legacy_client", "user", "Prior conversation context")
+
+        mem = MemoryStore(test_settings)
+        await mem.save_fact(legacy_user.id, "favorite_color", "blue")
+
+        # 2. Execute a new chat request in Phase 5D
+        with patch("api.routes.settings", test_settings), patch("api.security.settings", test_settings):
+            app = create_app()
+            mock_ollama = MagicMock()
+            mock_ollama.generate = AsyncMock(return_value="Upgraded response")
+            mock_ollama.get_installed_models = AsyncMock(return_value=[type("M", (), {"name": "qwen3:8b"})()])
+            mock_ollama.is_ollama_available = AsyncMock(return_value=True)
+            app.state.ai_client = mock_ollama
+
+            client = TestClient(app)
+            resp = client.post(
+                "/api/chat",
+                json={"message": "New message", "conversation_id": "legacy_thread"},
+                headers={"X-API-Key": "migrating-client-key"},
+            )
+            assert resp.status_code == 200
+
+            # 3. Verify user external_id was upgraded to full_ext_id
+            old_record = await get_user_by_external_id(legacy_ext_id)
+            assert old_record is None  # Upgraded
+
+            new_record = await get_user_by_external_id(full_ext_id)
+            assert new_record is not None
+            assert new_record.id == legacy_user.id  # Same user ID!
+
+            # 4. Verify previous conversation history and memories are completely preserved
+            msgs = await list_messages(conv.id)
+            assert any(m.content == "Prior conversation context" for m in msgs)
+
+            facts = await mem.list_facts(new_record.id)
+            assert any(f.key == "favorite_color" and f.value == "blue" for f in facts)
     finally:
         await shutdown_db()
         for suffix in ("", "-wal", "-shm"):

@@ -9,7 +9,7 @@
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `WHATSAPP_PHONE` | WhatsApp phone number | `918900653250` |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token | `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11` |
-| `OLLAMA_MODEL` | Ollama model identifier | `qwen3:8b` |
+| `OLLAMA_MODEL` | Installed Ollama model identifier (run `ollama list` to inspect) | e.g. `llama3:8b`, `mistral:latest` |
 | `OLLAMA_URL` | Ollama server URL | `http://127.0.0.1:11434` |
 | `DATABASE_URL` | SQLAlchemy database URL | `sqlite+aiosqlite:///./assistant.db` |
 | `SESSION_SECRET` | Secret for JWT signing and session encryption (min 32 chars) | `replace-with-strong-secret-min-32-chars` |

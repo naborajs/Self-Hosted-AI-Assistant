@@ -20,4 +20,6 @@ echo ===============================================
 echo All services stopped cleanly.
 echo ===============================================
 echo.
-pause
+if "%~1" neq "--no-pause" (
+    pause
+)

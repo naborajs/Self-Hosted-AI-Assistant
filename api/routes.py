@@ -25,6 +25,7 @@ from database.repository import (
     list_diagnostic_outbound_messages,
     list_registered_users,
     resolve_effective_model,
+    resolve_machine_user,
     retry_failed_outbound_message,
     set_system_setting,
     set_user_preference,
@@ -1264,8 +1265,17 @@ async def machine_chat_endpoint(
     """
     correlation_id = f"chat-{secrets.token_hex(8)}"
     client_id = client.get("client_id", "default_client")
+    legacy_client_id = client.get("legacy_client_id")
     external_id = f"api:{client_id}"
+    legacy_external_id = f"api:{legacy_client_id}" if legacy_client_id else None
     chat_id = payload.conversation_id or "default"
+
+    # Resolve or seamlessly migrate legacy client identity without history/memory loss
+    await resolve_machine_user(
+        external_id=external_id,
+        display_name=client_id,
+        legacy_external_id=legacy_external_id,
+    )
 
     # Use app.state components if initialized
     ai_client = getattr(request.app.state, "ai_client", None)

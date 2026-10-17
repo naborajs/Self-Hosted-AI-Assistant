@@ -403,6 +403,8 @@ class WhatsAppGateway:
                     tool_orchestrator=self.tool_orchestrator,
                     app_settings=self.settings,
                 )
+                if turn.is_error:
+                    raise RuntimeError(turn.error_detail or turn.response)
                 answer = turn.response
                 if not answer or not answer.strip():
                     raise ValueError("Empty response received from AI model")

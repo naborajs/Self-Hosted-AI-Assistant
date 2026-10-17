@@ -152,9 +152,13 @@ Edit `.env` to customize:
 - Add to system PATH
 - Or specify full path in start.bat
 
-### Model not found
-- Pull model: `ollama pull qwen3:8b`
-- Or change OLLAMA_MODEL in .env
+### Model not found or uninstalled
+- EDITH discovers installed models dynamically and never automatically pulls, downloads, or switches models.
+- Operator workflow for model selection:
+  1. Verify Ollama is running and inspect your existing installed models: `ollama list`
+  2. Configure EDITH to use an installed model by setting `OLLAMA_MODEL=<model_name>` in `.env` (or via `/model <name>` in chat).
+  3. Verify availability using the CLI diagnostics: `edith doctor` or `edith models list`.
+  4. If the configured model is missing, EDITH will report the problem non-silently so the operator can choose an installed model.
 
 ### Connection refused
 - Verify Ollama is running: `ollama serve`
@@ -172,10 +176,9 @@ Edit `.env` to customize:
 
 ## Performance Notes
 
-- Response time depends on Ollama model size
-- Default model: qwen3:8b (8 billion parameters)
-- For faster responses: Use smaller model (7b, 3.8b)
-- For better quality: Use larger model (13b, 70b)
+- Response time depends on local hardware and installed Ollama model architecture.
+- For faster responses: select a smaller quantized model already present in Ollama (e.g. 7b, 3b).
+- For complex reasoning: select a larger model (e.g. 14b, 32b, 70b).
 
 ## Security Notes
 
