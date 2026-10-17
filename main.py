@@ -98,8 +98,9 @@ def create_app() -> FastAPI:
         except Exception:
             whatsapp_healthy = False
         
-        # Check Telegram (just verify token is configured)
-        telegram_healthy = bool(settings.telegram_bot_token)
+        # Check Telegram (verify token is configured and not default placeholder)
+        raw_tg_token = (settings.telegram_bot_token or "").strip()
+        telegram_healthy = bool(raw_tg_token) and not raw_tg_token.startswith("your-")
         
         return {
             "backend": True,

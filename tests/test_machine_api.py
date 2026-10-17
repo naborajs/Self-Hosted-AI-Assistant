@@ -253,3 +253,177 @@ async def test_machine_api_client_isolation():
             assert c1.id != c2.id
             assert c1.user_id == u1.id
             assert c2.user_id == u2.id
+
+
+@pytest.mark.asyncio
+async def test_machine_api_cross_client_memory_and_history_isolation():
+    """Verify that Client A cannot read, leak, or overwrite Client B's memories or history."""
+    async with create_isolated_test_env() as env:
+        settings = env["settings"]
+        with patch("api.routes.settings", settings), patch("api.security.settings", settings):
+            app = create_app()
+
+            mock_ollama = MagicMock()
+            mock_ollama.generate = AsyncMock(return_value="Understood.")
+            mock_ollama.get_installed_models = AsyncMock(return_value=[type("M", (), {"name": "qwen3:8b"})()])
+            mock_ollama.is_ollama_available = AsyncMock(return_value=True)
+            app.state.ai_client = mock_ollama
+
+            client = TestClient(app)
+
+            # Client A saves a private memory via /remember in thread 'shared-topic'
+            token_a = create_access_token(subject="tenant_alpha")
+            resp_a = client.post(
+                "/api/chat",
+                json={"message": "/remember secret_api_pin=987654", "conversation_id": "shared-topic"},
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            assert resp_a.status_code == 200
+            assert "Remembered" in resp_a.json()["response"]
+
+            # Client B asks for memories in the identical conversation_id 'shared-topic'
+            token_b = create_access_token(subject="tenant_beta")
+            resp_b = client.post(
+                "/api/chat",
+                json={"message": "/memories", "conversation_id": "shared-topic"},
+                headers={"Authorization": f"Bearer {token_b}"},
+            )
+            assert resp_b.status_code == 200
+            # Client B must NOT see Client A's secret memory
+            assert "secret_api_pin" not in resp_b.json()["response"]
+            assert "987654" not in resp_b.json()["response"]
+            assert "You don't have any saved memories yet" in resp_b.json()["response"]
+
+            # Client B attempts to forget Client A's memory
+            resp_b_forget = client.post(
+                "/api/chat",
+                json={"message": "/forget secret_api_pin", "conversation_id": "shared-topic"},
+                headers={"Authorization": f"Bearer {token_b}"},
+            )
+            assert resp_b_forget.status_code == 200
+            assert "No memory found" in resp_b_forget.json()["response"]
+
+            # Client A still has the memory intact
+            resp_a_check = client.post(
+                "/api/chat",
+                json={"message": "/memories", "conversation_id": "shared-topic"},
+                headers={"Authorization": f"Bearer {token_a}"},
+            )
+            assert resp_a_check.status_code == 200
+            assert "secret_api_pin" in resp_a_check.json()["response"]
+
+
+@pytest.mark.asyncio
+async def test_machine_api_unnamed_api_keys_isolation():
+    """Verify that multiple raw API keys configured without 'name:' prefixes receive isolated client IDs."""
+    from pydantic import SecretStr
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    db_url = f"sqlite+aiosqlite:///{path}"
+    test_settings = Settings(
+        app_host="127.0.0.1",
+        app_port=8000,
+        database_url=db_url,
+        session_secret="test_session_secret_12345678901234567890",
+        admin_users="admin_user",
+        storage_path=tempfile.gettempdir(),
+        api_keys=SecretStr("raw-secret-key-1,raw-secret-key-2"),
+        ollama_model="qwen3:8b",
+        enable_tool_execution=False,
+    )
+    await init_db(test_settings)
+    try:
+        with patch("api.routes.settings", test_settings), patch("api.security.settings", test_settings):
+            app = create_app()
+
+            mock_ollama = MagicMock()
+            mock_ollama.generate = AsyncMock(return_value="Ack")
+            mock_ollama.get_installed_models = AsyncMock(return_value=[type("M", (), {"name": "qwen3:8b"})()])
+            mock_ollama.is_ollama_available = AsyncMock(return_value=True)
+            app.state.ai_client = mock_ollama
+
+            client = TestClient(app)
+
+            # Key 1 request
+            resp1 = client.post(
+                "/api/chat",
+                json={"message": "Msg 1", "conversation_id": "main"},
+                headers={"X-API-Key": "raw-secret-key-1"},
+            )
+            assert resp1.status_code == 200
+
+            # Key 2 request
+            resp2 = client.post(
+                "/api/chat",
+                json={"message": "Msg 2", "conversation_id": "main"},
+                headers={"X-API-Key": "raw-secret-key-2"},
+            )
+            assert resp2.status_code == 200
+
+            # Verify that two distinct users were created in SQLite
+            import hashlib
+            from database.repository import get_user_by_external_id
+            id1 = f"api:client_{hashlib.sha256(b'raw-secret-key-1').hexdigest()[:8]}"
+            id2 = f"api:client_{hashlib.sha256(b'raw-secret-key-2').hexdigest()[:8]}"
+            u1 = await get_user_by_external_id(id1)
+            u2 = await get_user_by_external_id(id2)
+            assert u1 is not None
+            assert u2 is not None
+            assert u1.id != u2.id
+    finally:
+        await shutdown_db()
+        for suffix in ("", "-wal", "-shm"):
+            p = f"{path}{suffix}"
+            if os.path.exists(p):
+                with contextlib.suppress(Exception):
+                    os.remove(p)
+
+
+@pytest.mark.asyncio
+async def test_machine_api_token_security_and_privilege_boundary():
+    """Verify token expiry enforcement, invalid subject rejection, and admin endpoint denial."""
+    import jwt
+    from datetime import datetime, timedelta, timezone
+
+    async with create_isolated_test_env() as env:
+        settings = env["settings"]
+        with patch("api.routes.settings", settings), patch("api.security.settings", settings):
+            app = create_app()
+            client = TestClient(app)
+
+            secret_key = settings.session_secret.get_secret_value()
+
+            # 1. Expired token -> 401
+            expired_payload = {
+                "sub": "client_expired",
+                "exp": int((datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp()),
+            }
+            expired_token = jwt.encode(expired_payload, secret_key, algorithm="HS256")
+            resp_exp = client.post(
+                "/api/chat",
+                json={"message": "Hello"},
+                headers={"Authorization": f"Bearer {expired_token}"},
+            )
+            assert resp_exp.status_code == 401
+
+            # 2. Token with empty sub -> 401
+            empty_sub_payload = {
+                "sub": "   ",
+                "exp": int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()),
+            }
+            empty_sub_token = jwt.encode(empty_sub_payload, secret_key, algorithm="HS256")
+            resp_empty = client.post(
+                "/api/chat",
+                json={"message": "Hello"},
+                headers={"Authorization": f"Bearer {empty_sub_token}"},
+            )
+            assert resp_empty.status_code == 401
+
+            # 3. Machine API Key cannot access admin routes
+            resp_admin = client.get(
+                "/api/models",
+                headers={"X-API-Key": "secret-alpha-key-999"},
+            )
+            # Admin endpoints expect Bearer token via OAuth2 scheme; X-API-Key is not valid admin auth
+            assert resp_admin.status_code in (401, 403)

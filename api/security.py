@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -91,9 +92,11 @@ async def get_machine_client(
         configured_keys = settings.valid_api_keys
         for configured_entry in configured_keys:
             expected_secret = configured_entry
-            client_id = "machine_client"
             if ":" in configured_entry:
                 client_id, expected_secret = configured_entry.split(":", 1)
+                client_id = client_id.strip() or f"client_{hashlib.sha256(expected_secret.strip().encode()).hexdigest()[:8]}"
+            else:
+                client_id = f"client_{hashlib.sha256(expected_secret.strip().encode()).hexdigest()[:8]}"
             if secrets.compare_digest(x_api_key.strip(), expected_secret.strip()):
                 return {"client_id": client_id, "auth_type": "api_key"}
 
@@ -102,7 +105,14 @@ async def get_machine_client(
         token = authorization.split(" ", 1)[1].strip()
         try:
             payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            client_id = payload.get("sub", "api_client")
+            raw_sub = payload.get("sub")
+            if not raw_sub or not isinstance(raw_sub, str) or not raw_sub.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token subject",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            client_id = raw_sub.strip()
             return {"client_id": client_id, "auth_type": "bearer", "scopes": payload.get("scopes", [])}
         except jwt.PyJWTError:
             pass

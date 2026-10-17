@@ -31,21 +31,31 @@ class TelegramGateway:
         self.settings = settings
         self.memory = memory
         self.ai_manager = ai_manager
-        self.bot_token = settings.telegram_bot_token
-        self.application = Application.builder().token(self.bot_token).build()
+        self.bot_token = getattr(settings, "telegram_bot_token", None) or ""
         self.ai_client = OllamaClient()
         self.tool_registry = ToolRegistry(self.settings)
         self.tool_orchestrator = ToolOrchestrator(self.ai_client, self.tool_registry, self.settings)
+        self.application = None
 
-        self.application.add_handler(CommandHandler("start", self.handle_start))
-        self.application.add_handler(CommandHandler(
-            ["models", "model", "language", "style", "remember", "memories", "forget", "help", "confirm", "cancel"],
-            self.handle_command,
-        ))
-
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        if self.bot_token and self.bot_token.strip() and not self.bot_token.strip().startswith("your-"):
+            try:
+                self.application = Application.builder().token(self.bot_token.strip()).build()
+                self.application.add_handler(CommandHandler("start", self.handle_start))
+                self.application.add_handler(CommandHandler(
+                    ["models", "model", "language", "style", "remember", "memories", "forget", "help", "confirm", "cancel"],
+                    self.handle_command,
+                ))
+                self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+            except Exception as exc:
+                logger.warning("Telegram gateway initialization skipped (invalid token): %s", exc)
+                self.application = None
+        else:
+            logger.info("Telegram gateway disabled: no valid telegram_bot_token configured.")
 
     async def start(self) -> None:
+        if self.application is None:
+            logger.info("Telegram gateway skipped: not configured")
+            return
         logger.info("Starting Telegram gateway")
         await self.application.initialize()
         await self.application.start()
@@ -53,10 +63,16 @@ class TelegramGateway:
 
     async def stop(self) -> None:
         logger.info("Stopping Telegram gateway")
-        await self.application.updater.stop_polling()
-        await self.application.stop()
-        await self.application.shutdown()
-        await self.ai_client.close()
+        if self.application is not None:
+            try:
+                if getattr(self.application, "updater", None) and getattr(self.application.updater, "running", False):
+                    await self.application.updater.stop_polling()
+                await self.application.stop()
+                await self.application.shutdown()
+            except Exception as exc:
+                logger.debug("Telegram shutdown warning: %s", exc)
+        if self.ai_client:
+            await self.ai_client.close()
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Local AI assistant ready. Send a message to begin, or use /models to view available models.")

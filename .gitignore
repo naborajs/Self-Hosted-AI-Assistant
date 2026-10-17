@@ -3,31 +3,49 @@
 __pycache__/
 *.pyc
 
-# Database
+# Database & SQLite State
 *.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 assistant.db
 
-# Environment
+# Environment & Credentials
 .env
+.env.local
+*.key
+*.pem
 
 # Logs
 *.log
 
-# Ollama
+# Ollama Storage & Workspaces
 storage/
 
 # WhatsApp Sessions & Inbound Queue
 whatsapp_bridge/storage/
 whatsapp_bridge/inbound_queue.json
 whatsapp_bridge/*.tmp
+whatsapp_bridge/auth_info_baileys/
+whatsapp_bridge/.baileys_auth/
+whatsapp_bridge/session/
+whatsapp_bridge/sessions/
+auth_info_baileys/
+.baileys_auth/
+session/
+sessions/
 auth_state/
 *.tmp
 
-# Node
+# Node dependencies
 node_modules/
+whatsapp_bridge/node_modules/
 
-# VS Code
+# VS Code & IDEs
 .vscode/
+.idea/
 
 # OS
 .DS_Store
