@@ -144,12 +144,12 @@ async def test_scenario_03_ollama_unavailable_handling():
         models = await client.get_installed_models(refresh=True)
         assert models == []
 
-    # Inference attempts should raise OllamaConnectionError
-    with patch.object(client._http_client, "post", new_callable=AsyncMock) as mock_post:
-        mock_post.side_effect = httpx.ConnectError("Connection refused")
-        with pytest.raises(OllamaConnectionError) as exc_info:
-            await client.generate("Hello")
-        assert "is unreachable" in str(exc_info.value)
+        # Inference attempts should raise OllamaConnectionError when Ollama is unreachable
+        with patch.object(client._http_client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = httpx.ConnectError("Connection refused")
+            with pytest.raises(OllamaConnectionError) as exc_info:
+                await client.generate("Hello")
+            assert "is unreachable" in str(exc_info.value)
 
 
 # =========================================================================

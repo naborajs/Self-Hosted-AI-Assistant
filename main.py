@@ -84,16 +84,16 @@ def create_app() -> FastAPI:
         
         # Check Ollama
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(f"{settings.ollama_url}/api/tags")
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+                response = await client.get(f"{str(settings.ollama_url).rstrip('/')}/api/tags")
                 ollama_healthy = response.status_code == 200
         except Exception:
             ollama_healthy = False
         
         # Check WhatsApp bridge
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(f"{settings.whatsapp_bridge_url}/health")
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+                response = await client.get(f"{str(settings.whatsapp_bridge_url).rstrip('/')}/health")
                 whatsapp_healthy = response.status_code == 200
         except Exception:
             whatsapp_healthy = False

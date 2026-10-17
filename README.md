@@ -72,8 +72,10 @@ cd Self-Hosted-AI-Assistant
 python -m pip install -r requirements.txt
 ```
 
-3. Configure your environment in `.env`.
-4. Start the WhatsApp bridge:
+3. Configure your environment:
+   - Copy `.env.example` to `.env`.
+   - Inspect installed models via `ollama list` and set `OLLAMA_MODEL` to your preferred installed model (e.g. `dolphin3:8b`, `gemma4:12b`, `llama3:8b`). EDITH will never download or pull models automatically.
+4. Start the WhatsApp bridge (optional, if using WhatsApp):
 
 ```bash
 cd whatsapp_bridge

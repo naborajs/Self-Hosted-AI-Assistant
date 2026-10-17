@@ -292,7 +292,7 @@ The long-term memory system enables users to persist personal preferences and fa
 
 **Strict Non-Silent Fallback Rule**:
 If a selected model is uninstalled or missing from the host machine, the system will **never** silently fall back to another model. It produces an explicit diagnostic notification explaining that the requested model is missing.
-All models must be installed on the host machine using `ollama pull <name>`.
+Operators manage local models directly via Ollama (`ollama list`); additional models may be optionally installed with `ollama pull <name>`, but EDITH operates out-of-the-box with whichever model the operator has already installed.
 
 
 ## Phase 5A: Terminal-First Management & Operator Control

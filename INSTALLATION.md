@@ -38,25 +38,35 @@ cd whatsapp_bridge
 npm install
 ```
 
-## Environment Variables
+## Environment Variables & Model Setup
 
-See [CONFIGURATION.md](./CONFIGURATION.md) for the full environment reference.
+1. Copy `.env.example` to `.env`.
+2. Verify existing Ollama service: run `ollama list` to inspect models already installed on the machine.
+3. Configure `OLLAMA_MODEL` in `.env` to match your preferred installed model.
+   - EDITH adapts to whichever compatible model the operator provides and will **never** automatically pull, download, or preload models.
+   - Operators may independently choose to install additional models with `ollama pull <name>`, but this is optional and operator-initiated.
+4. See [CONFIGURATION.md](./CONFIGURATION.md) for the full environment reference.
 
 ## First Run
 
-1. Start Ollama.
-2. Start the WhatsApp bridge:
-
-```bash
-npm start
-```
-
-3. In the main project root, run:
-
-```bash
-python main.py
-```
+1. Start or verify the Ollama service (`ollama serve` or system daemon).
+2. Verify model availability with the CLI:
+   ```bash
+   python -m edith doctor
+   ```
+3. Start the WhatsApp bridge (if using WhatsApp):
+   ```bash
+   cd whatsapp_bridge
+   npm start
+   ```
+4. In the main project root, start the Python backend:
+   ```bash
+   python main.py
+   ```
+   (On Windows, `start.bat` automates this startup sequence).
 
 ## Validation
 
-Open the API docs at `http://127.0.0.1:8000/docs` and confirm you can access the health endpoint.
+- Check system health: `GET http://127.0.0.1:8000/health`
+- Check CLI status: `python -m edith status`
+- Explore API documentation: `http://127.0.0.1:8000/docs`
