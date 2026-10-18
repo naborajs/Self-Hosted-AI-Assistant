@@ -1,3 +1,8 @@
+"""Project EDITH v2.0 — Python Package & Console Script Distribution Setup.
+
+Defines package metadata, Python version prerequisites (>=3.12), core and API dependencies,
+and registers the `edith` command-line executable via setuptools console script entrypoints.
+"""
 from setuptools import find_packages, setup
 
 setup(
