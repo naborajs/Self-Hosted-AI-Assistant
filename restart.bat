@@ -8,10 +8,10 @@ echo ===============================================
 echo.
 
 echo Stopping services...
-call "%~dp0stop.bat"
+call "%~dp0stop.bat" --no-pause
 
 timeout /t 2 /nobreak
 
 echo.
 echo Starting services...
-call "%~dp0start.bat"
+call "%~dp0start.bat" --no-pause

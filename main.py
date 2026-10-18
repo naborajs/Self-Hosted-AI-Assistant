@@ -11,12 +11,13 @@ from fastapi.responses import JSONResponse
 
 from api.middleware import RateLimitMiddleware
 from config import settings
-from api.routes import api_router
+from api.routes import api_router, v1_router
 from database.connection import init_db, shutdown_db
 from whatsapp.service import WhatsAppGateway
 from telegram_gateway.bot import TelegramGateway
 from memory.store import MemoryStore
 from ai.manager import AIManager
+from ai.client import OllamaClient
 
 
 logger = logging.getLogger("local_ai_assistant")
@@ -40,9 +41,11 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
 
     app.include_router(api_router, prefix="/api")
+    app.include_router(v1_router)
 
     app.state.memory = MemoryStore(settings)
     app.state.ai_manager = AIManager(settings.storage_path)
+    app.state.ai_client = OllamaClient(settings)
     app.state.whatsapp = WhatsAppGateway(settings, app.state.ai_manager)
     app.state.telegram = TelegramGateway(settings, app.state.memory, app.state.ai_manager)
 
@@ -81,22 +84,23 @@ def create_app() -> FastAPI:
         
         # Check Ollama
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(f"{settings.ollama_url}/api/tags")
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+                response = await client.get(f"{str(settings.ollama_url).rstrip('/')}/api/tags")
                 ollama_healthy = response.status_code == 200
         except Exception:
             ollama_healthy = False
         
         # Check WhatsApp bridge
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(f"{settings.whatsapp_bridge_url}/health")
+            async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
+                response = await client.get(f"{str(settings.whatsapp_bridge_url).rstrip('/')}/health")
                 whatsapp_healthy = response.status_code == 200
         except Exception:
             whatsapp_healthy = False
         
-        # Check Telegram (just verify token is configured)
-        telegram_healthy = bool(settings.telegram_bot_token)
+        # Check Telegram (verify token is configured and not default placeholder)
+        raw_tg_token = (settings.telegram_bot_token or "").strip()
+        telegram_healthy = bool(raw_tg_token) and not raw_tg_token.startswith("your-")
         
         return {
             "backend": True,
@@ -123,9 +127,18 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
+    host = settings.app_host
+    if not settings.is_loopback_only and not settings.allow_remote_api:
+        logger.warning(
+            "APP_HOST=%s requested without ALLOW_REMOTE_API=True. "
+            "Binding to 127.0.0.1 for security.",
+            settings.app_host,
+        )
+        host = "127.0.0.1"
+
     uvicorn.run(
         "main:app",
-        host=settings.app_host,
+        host=host,
         port=settings.app_port,
         log_level=settings.log_level.lower(),
         reload=False,

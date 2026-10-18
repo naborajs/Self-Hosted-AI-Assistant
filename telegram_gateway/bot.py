@@ -7,10 +7,21 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import settings
-from database.repository import create_conversation, get_or_create_user, get_conversation, save_message
+from database.repository import (
+    create_conversation,
+    get_conversation,
+    get_or_create_user,
+    get_user_preference,
+    resolve_effective_model,
+    save_message,
+)
 from ai.client import OllamaClient
+from ai.commands import handle_user_command
 from ai.conversation import ConversationContext
 from ai.manager import AIManager
+from ai.orchestrator import ToolOrchestrator
+from ai.processor import execute_conversation_turn
+from ai.tools import ToolRegistry
 
 logger = logging.getLogger("local_ai_assistant.telegram")
 
@@ -20,14 +31,31 @@ class TelegramGateway:
         self.settings = settings
         self.memory = memory
         self.ai_manager = ai_manager
-        self.bot_token = settings.telegram_bot_token
-        self.application = Application.builder().token(self.bot_token).build()
+        self.bot_token = getattr(settings, "telegram_bot_token", None) or ""
         self.ai_client = OllamaClient()
+        self.tool_registry = ToolRegistry(self.settings)
+        self.tool_orchestrator = ToolOrchestrator(self.ai_client, self.tool_registry, self.settings)
+        self.application = None
 
-        self.application.add_handler(CommandHandler("start", self.handle_start))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        if self.bot_token and self.bot_token.strip() and not self.bot_token.strip().startswith("your-"):
+            try:
+                self.application = Application.builder().token(self.bot_token.strip()).build()
+                self.application.add_handler(CommandHandler("start", self.handle_start))
+                self.application.add_handler(CommandHandler(
+                    ["models", "model", "language", "style", "remember", "memories", "forget", "help", "confirm", "cancel"],
+                    self.handle_command,
+                ))
+                self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+            except Exception as exc:
+                logger.warning("Telegram gateway initialization skipped (invalid token): %s", exc)
+                self.application = None
+        else:
+            logger.info("Telegram gateway disabled: no valid telegram_bot_token configured.")
 
     async def start(self) -> None:
+        if self.application is None:
+            logger.info("Telegram gateway skipped: not configured")
+            return
         logger.info("Starting Telegram gateway")
         await self.application.initialize()
         await self.application.start()
@@ -35,49 +63,79 @@ class TelegramGateway:
 
     async def stop(self) -> None:
         logger.info("Stopping Telegram gateway")
-        await self.application.updater.stop_polling()
-        await self.application.stop()
-        await self.application.shutdown()
-        await self.ai_client.close()
+        if self.application is not None:
+            try:
+                if getattr(self.application, "updater", None) and getattr(self.application.updater, "running", False):
+                    await self.application.updater.stop_polling()
+                await self.application.stop()
+                await self.application.shutdown()
+            except Exception as exc:
+                logger.debug("Telegram shutdown warning: %s", exc)
+        if self.ai_client:
+            await self.ai_client.close()
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text("Local AI assistant ready. Send a message to begin.")
+        await update.message.reply_text("Local AI assistant ready. Send a message to begin, or use /models to view available models.")
+
+    async def handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        user = update.effective_user
+        if chat is None or user is None or update.message is None:
+            return
+
+        try:
+            external_id = f"telegram:{user.id}"
+            username = user.username or user.full_name or str(user.id)
+            text = update.message.text or ""
+
+            turn = await execute_conversation_turn(
+                external_id=external_id,
+                sender_name=username,
+                chat_id=str(chat.id),
+                content=text,
+                platform="telegram",
+                sender_id=username,
+                ai_client=self.ai_client,
+                ai_manager=self.ai_manager,
+                memory_store=self.memory,
+                tool_registry=self.tool_registry,
+                tool_orchestrator=self.tool_orchestrator,
+                app_settings=self.settings,
+            )
+            answer = turn.response
+            await update.message.reply_text(answer)
+        except Exception as exc:
+            logger.exception("Failed handling Telegram command: %s", exc)
+            await update.message.reply_text("An error occurred executing your command. Please try again.")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
         user = update.effective_user
-        if chat is None or user is None:
+        if chat is None or user is None or update.message is None:
             return
 
         try:
             logger.debug("Telegram update received: chat_id=%s user_id=%s", getattr(chat, 'id', None), getattr(user, 'id', None))
             external_id = f"telegram:{user.id}"
-            username = user.username or user.full_name
-            app_user = await get_or_create_user(external_id, username)
-            conversation = await get_conversation(app_user.id, str(chat.id))
-            if conversation is None:
-                conversation = await create_conversation(app_user.id, str(chat.id), title=chat.title or username)
-
-            text = update.message.text
+            username = user.username or user.full_name or str(user.id)
+            text = update.message.text or ""
             logger.debug("Telegram message from %s: %s", username, text and (text[:200] + ("..." if len(text) > 200 else "")))
-            await save_message(conversation.id, username, "user", text)
-            context_obj = ConversationContext(conversation.id, self.ai_manager)
 
-            preset_answer = self.ai_manager.match_preset(text)
-            if preset_answer:
-                answer = preset_answer
-            else:
-                prompt = await context_obj.build_prompt(platform="telegram", user_name=username, user_message=text)
-                prompt += f"\nAssistant:"
-                try:
-                    answer = await self.ai_client.generate(prompt)
-                    if not answer or not answer.strip():
-                        answer = "I couldn't generate a response. Please try again."
-                except Exception as exc:
-                    logger.exception("Ollama generation failed: %s", exc)
-                    answer = "I encountered an error processing your request. Please try again."
-            
-            await save_message(conversation.id, "assistant", "assistant", answer)
+            turn = await execute_conversation_turn(
+                external_id=external_id,
+                sender_name=username,
+                chat_id=str(chat.id),
+                content=text,
+                platform="telegram",
+                sender_id=username,
+                ai_client=self.ai_client,
+                ai_manager=self.ai_manager,
+                memory_store=self.memory,
+                tool_registry=self.tool_registry,
+                tool_orchestrator=self.tool_orchestrator,
+                app_settings=self.settings,
+            )
+            answer = turn.response
             logger.debug("Sending Telegram reply to %s: %s", username, answer and (answer[:200] + ("..." if len(answer) > 200 else "")))
             await update.message.reply_text(answer)
         except Exception as exc:

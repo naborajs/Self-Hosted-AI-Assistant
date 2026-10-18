@@ -3,11 +3,15 @@
 .env.*
 !.env.example
 
-# WhatsApp runtime storage, session state, and media
+# WhatsApp runtime storage, session state, inbound queue, and media
 storage/
 auth_state/
 *.enc
 *.session
+inbound_queue.json
+inbound_queue.json*
+*.tmp
+data/
 
 # Node dependencies and logs
 node_modules/

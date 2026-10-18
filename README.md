@@ -14,29 +14,24 @@ A privacy-first, local AI assistant platform for WhatsApp, Telegram, and Ollama.
 
 ---
 
-## Features
-
-- Local Ollama-powered AI inference
+- Local Ollama-powered AI inference with dynamic discovery and non-silent fallback
+- Controlled AI tool execution framework with sandboxed workspace and human-in-the-loop confirmation
 - WhatsApp companion device bridge integration
 - Telegram chat gateway support
+- Durable SQLite WAL messaging inbox and delivery queue with crash recovery
+- Long-term memory store with deterministic relevance retrieval and injection protection
+- Professional Terminal Interface (`edith` CLI) with `--json` automation output
 - AI identity and personality management
 - Global and platform-specific system prompts
 - Preset reply engine with exact, keyword, and regex match
 - Knowledge base and training import system
-- Memory management for short-term and long-term context
-- Admin API for runtime configuration
+- Admin API for runtime configuration with loopback-only default exposure
+- Machine Chat API (`POST /api/chat`, `POST /v1/chat`) for local developer and automation integrations
 - Backup and restore for AI state
 - Secure admin access and health monitoring
 
-## Screenshots
-
-> Replace these placeholders with real screenshots after setup.
-
-![WhatsApp Screenshot](./assets/screenshot-whatsapp.png)
-![Telegram Screenshot](./assets/screenshot-telegram.png)
-![Admin UI Placeholder](./assets/screenshot-admin.png)
-
 ## Architecture Overview
+
 
 ```mermaid
 flowchart TD
@@ -77,8 +72,10 @@ cd Self-Hosted-AI-Assistant
 python -m pip install -r requirements.txt
 ```
 
-3. Configure your environment in `.env`.
-4. Start the WhatsApp bridge:
+3. Configure your environment:
+   - Copy `.env.example` to `.env`.
+   - Inspect installed models via `ollama list` and set `OLLAMA_MODEL` to your preferred installed model (e.g. `dolphin3:8b`, `gemma4:12b`, `llama3:8b`). EDITH will never download or pull models automatically.
+4. Start the WhatsApp bridge (optional, if using WhatsApp):
 
 ```bash
 cd whatsapp_bridge
@@ -93,6 +90,14 @@ python main.py
 ```
 
 6. Open `http://127.0.0.1:8000/docs` for API access.
+
+7. Manage the assistant using the terminal CLI:
+
+```bash
+pip install -e .
+edith doctor       # Diagnostic sanity check
+edith status       # Operational overview
+```
 
 ## WhatsApp Setup
 

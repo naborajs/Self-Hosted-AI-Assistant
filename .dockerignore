@@ -13,10 +13,16 @@
 *.sqlite3
 assistant.db
 
-# WhatsApp session state & media
+# WhatsApp session state, inbound queue & media
 storage/whatsapp_bridge/
 storage/sessions/
 whatsapp_bridge/storage/
+inbound_queue.json
+inbound_queue.json*
+whatsapp_bridge/inbound_queue.json
+whatsapp_bridge/*.tmp
+data/
+*.tmp
 
 # Python virtual envs and caches
 .venv/
