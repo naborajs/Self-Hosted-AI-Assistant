@@ -10,7 +10,7 @@ echo.
 echo Stopping services...
 call "%~dp0stop.bat" --no-pause
 
-timeout /t 2 /nobreak
+timeout /t 2 /nobreak >nul 2>&1 || ping 127.0.0.1 -n 3 >nul 2>&1
 
 echo.
 echo Starting services...

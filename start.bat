@@ -56,7 +56,7 @@ if errorlevel 1 (
     echo Starting WhatsApp Bridge in separate window...
     cd /d "%~dp0whatsapp_bridge"
     start "Local AI - WhatsApp Bridge" cmd /k "npm start"
-    timeout /t 3 /nobreak >nul 2>&1
+    timeout /t 3 /nobreak >nul 2>&1 || ping 127.0.0.1 -n 4 >nul 2>&1
 )
 
 REM Start Python backend

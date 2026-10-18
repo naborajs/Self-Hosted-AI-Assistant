@@ -57,9 +57,13 @@ class TelegramGateway:
             logger.info("Telegram gateway skipped: not configured")
             return
         logger.info("Starting Telegram gateway")
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling()
+        try:
+            await self.application.initialize()
+            await self.application.start()
+            await self.application.updater.start_polling()
+        except Exception as exc:
+            logger.warning("Telegram gateway failed to start (invalid token or network issue): %s", exc)
+            self.application = None
 
     async def stop(self) -> None:
         logger.info("Stopping Telegram gateway")
