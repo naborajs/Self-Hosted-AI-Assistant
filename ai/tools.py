@@ -1,3 +1,18 @@
+"""Centralized tool registry, schema generation, and sandboxed execution for Project EDITH v2.0.
+
+This module provides the core tool execution framework for LLM-directed actions:
+- `PermissionCategory`: Categorizes tool privileges into `READ_ONLY`, `NETWORK`,
+  and `CONFIRMATION_REQUIRED`.
+- `ToolDefinition`: Encapsulates tool metadata, JSON Schema parameters, execution handlers,
+  aliases, and confirmation flags.
+- `ToolExecutionResult`: Captures standardized tool execution output, success flags,
+  human-in-the-loop confirmation staging, and error diagnostics.
+- `ToolRegistry`: Manages built-in tools (`calculator`, `file_manager_read`,
+  `file_manager_write`, `web_search`, `weather`, `youtube_assistant`, `minecraft_assistant`),
+  translates signatures to Ollama/OpenAI function schemas, validates JSON arguments,
+  and executes handlers with timeout containment.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +34,7 @@ logger = logging.getLogger("local_ai_assistant.ai_tools")
 
 
 class PermissionCategory(str, Enum):
+    """Execution permission levels for registered AI tools."""
     READ_ONLY = "read_only"
     NETWORK = "network"
     CONFIRMATION_REQUIRED = "confirmation_required"

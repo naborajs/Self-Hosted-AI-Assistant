@@ -1,3 +1,15 @@
+"""AI persona identity, preset matching, and local knowledge management for Project EDITH v2.0.
+
+This module provides the `AIManager` service responsible for:
+- Persisting and loading assistant identity metadata (`ai_identity.json`).
+- Managing channel-specific system prompts (`global`, `whatsapp`, `telegram`, `admin`).
+- Fast deterministic preset matching (`match_preset`) supporting exact, keyword, and regex rules.
+- Persona personality profiles (`friendly`, `professional`, `ns_gamming_mode`).
+- Local knowledge base document ingestion (JSON, CSV, PDF), indexing, and keyword search.
+- Backup creation and restoration of AI configuration state.
+- Dynamic system prompt interpolation and template rendering.
+"""
+
 from __future__ import annotations
 
 import csv

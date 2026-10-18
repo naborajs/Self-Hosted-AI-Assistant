@@ -1,3 +1,17 @@
+"""Unified conversation turn processing pipeline for Project EDITH v2.0.
+
+This module provides the central `execute_conversation_turn` function that unifies
+inbound message handling across WhatsApp, Telegram, and the FastAPI HTTP API:
+1. User & Conversation Resolution: Idempotently map platform external IDs to internal User and Conversation records.
+2. Ingress Message Persistence: Immediately record incoming user utterances in SQLite.
+3. User Command Handling: Intercept control commands (`/models`, `/model`, `/remember`, `/confirm`, etc.).
+4. Deterministic Preset Matching: Evaluate regex and keyword rules for instantaneous zero-latency responses.
+5. Hierarchical Model Resolution: Enforce user preference -> admin default -> environment fallback order.
+6. Memory & Context Assembly: Retrieve relevant long-term memories with injection-safe framing.
+7. Inference & Tool Orchestration: Coordinate multi-turn tool loops or single completions via Ollama.
+8. Egress Response Persistence: Record assistant replies and return a structured `TurnResult`.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +41,19 @@ logger = logging.getLogger("local_ai_assistant.processor")
 
 @dataclass
 class TurnResult:
+    """Encapsulates the output and metadata of an executed conversation turn.
+
+    Attributes:
+        response: Synthesized text response from the assistant, command, or preset.
+        model_used: Name of the Ollama model used (None if resolved via command or preset).
+        conversation_id: Internal primary key of the conversation thread.
+        user_id: Internal primary key of the interacting user.
+        assistant_message_id: Primary key of the persisted Message entry for the response.
+        is_command: True if handled by slash-command interception.
+        is_preset: True if handled by deterministic preset rule matching.
+        is_error: True if the turn encountered an unrecoverable failure.
+        error_detail: Detailed diagnostic message if is_error is True.
+    """
     response: str
     model_used: str | None
     conversation_id: int

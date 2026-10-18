@@ -1,3 +1,14 @@
+"""Multi-turn tool execution orchestrator and confirmation staging for Project EDITH v2.0.
+
+This module provides the `ToolOrchestrator` service responsible for:
+- Orchestrating multi-turn conversational tool execution loops with strict iteration bounds.
+- Intercepting sensitive tool invocations (such as file writes or external mutations)
+  and staging them as `PendingAction` records in the database with TTL-protected tokens.
+- Injecting tool execution feedback back into the dialogue history so models can self-correct.
+- Falling back to plain completion mode when a model reports unsupported tool capabilities.
+- Structuring prompt messages with role segregation (`system`, `user`, `assistant`, `tool`).
+"""
+
 from __future__ import annotations
 
 import logging

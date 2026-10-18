@@ -1,3 +1,17 @@
+"""Conversation context assembly and prompt framing subsystem for Project EDITH v2.0.
+
+This module provides the `ConversationContext` helper responsible for:
+- Fetching bounded dialogue history (`max_history`) from the persistent repository.
+- Asynchronously persisting incoming user turns and generated assistant replies.
+- Synthesizing full multi-section prompts for non-tool completion models:
+  - System persona and operational guidelines from `AIManager`.
+  - Presentation preferences (language translation, style adjustments).
+  - Injection-safe long-term memory injection (explicitly framed as untrusted reference
+    data to prevent prompt injection escapes, bounded to 600 characters).
+  - Domain knowledge snippets matching the user query.
+  - Conversation history formatted as alternating User/Assistant turns.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -12,6 +26,15 @@ logger = logging.getLogger("local_ai_assistant.conversation")
 
 @dataclass
 class ConversationContext:
+    """Encapsulates context, message history, and prompt synthesis for a conversation thread.
+
+    Attributes:
+        conversation_id: Primary key of the active conversation thread.
+        ai_manager: Instance of AIManager providing personas and system prompts.
+        memory_store: Optional MemoryStore instance for retrieving persistent user facts.
+        user_id: Optional internal User ID for memory scoping.
+        max_history: Maximum number of previous dialogue turns to include in prompt context.
+    """
     conversation_id: int
     ai_manager: Any
     memory_store: Any | None = None

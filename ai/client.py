@@ -1,3 +1,18 @@
+"""High-performance asynchronous HTTP client for local Ollama AI inference.
+
+This module provides the primary communication layer between Project EDITH and the
+underlying Ollama runtime:
+- Structured health checks and model discovery without side-effects (`/api/tags`).
+- Concurrency limiting via `asyncio.Semaphore` to safeguard host system memory and GPU resources.
+- Short-lived caching (`cache_ttl`) of installed models to reduce latency and round-trips.
+- Native tool/function-calling support via `/api/chat` with schema translation.
+- Graceful degradation: models failing tool execution with unsupported errors are
+  flagged in `_tool_unsupported_models` and re-attempted in plain text mode.
+- Strict non-autonomous policy: this client NEVER automatically issues `pull` commands.
+
+All requests are dispatched over persistent HTTP connections with explicit timeouts.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -81,6 +96,14 @@ class OllamaClient:
         cache_ttl: float | None = None,
         max_concurrency: int | None = None,
     ) -> None:
+        """Initialize the Ollama HTTP client.
+
+        Args:
+            model: Default model identifier or an application Settings instance.
+            base_url: Ollama HTTP daemon base endpoint (defaults to http://127.0.0.1:11434).
+            cache_ttl: Seconds to cache model tags before issuing network refreshes.
+            max_concurrency: Maximum simultaneous generation requests allowed through the semaphore.
+        """
         if model is not None and not isinstance(model, str):
             app_cfg = model
             self.settings = app_cfg

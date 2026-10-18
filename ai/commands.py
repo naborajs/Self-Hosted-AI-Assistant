@@ -1,3 +1,19 @@
+"""User slash-command parsing and execution subsystem for Project EDITH v2.0.
+
+This module intercepts and handles direct user control commands before messages
+are passed to AI inference or tool execution pipelines:
+- Model discovery and selection: `/models` and `/model <name>` (enforces admin privilege
+  check if `allow_user_model_selection` is disabled).
+- Presentation preferences: `/language <lang>` and `/style <concise|detailed|normal>`.
+- Long-term memory operations: `/remember <key>: <value>`, `/memories`, `/forget <key>`,
+  and `/forget all` (with 2-minute pending confirmation safety window).
+- Controlled tool confirmations: `/confirm <token>` and `/cancel [token]` executing or
+  aborting staged `PendingAction` records with brute-force attempt limits.
+- System guidance: `/help` delivering contextual platform instructions.
+
+All commands operate idempotently and return `(is_command: bool, reply_text: str | None)`.
+"""
+
 import json
 import logging
 import secrets
