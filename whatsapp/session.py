@@ -1,3 +1,10 @@
+"""Encrypted session persistence store for WhatsApp credentials in Project EDITH v2.0.
+
+Provides authenticated encryption at rest using Fernet (AES-128-CBC with HMAC-SHA256):
+- Key Derivation: Derives a 32-byte urlsafe-base64 key from `SESSION_SECRET` via SHA-256.
+- Tamper Resistance: Authenticated decryption rejects corrupt or modified session files.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -9,11 +16,13 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 def _create_key(secret: str) -> bytes:
+    """Derive a URL-safe base64-encoded 32-byte key from the provided secret string."""
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
     return base64.urlsafe_b64encode(digest)
 
 
 class EncryptedSessionStore:
+    """Manages encrypted file storage of session credentials and authentication tokens."""
     def __init__(self, storage_path: Path, secret: str) -> None:
         self.storage_path = storage_path
         self.storage_path.mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,15 @@
+/**
+ * WhatsApp Multi-Device Baileys Bridge Service for Project EDITH v2.0.
+ *
+ * Responsibilities:
+ * - WebSocket Connection: Manages the Baileys multi-device socket connection to WhatsApp Web servers.
+ * - Loopback Binding: Restricts listener strictly to loopback (127.0.0.1) preventing network exposure.
+ * - Secret Authentication: Validates `X-Bridge-Secret` or Bearer tokens via constant-time comparison.
+ * - Encrypted Auth Storage: Encrypts session credentials at rest using AES-256-GCM with SESSION_SECRET.
+ * - Durable File Inbox: Buffers incoming messages in a crash-resilient JSON queue until acknowledged by Python.
+ * - HTTP Endpoints: Exposes pairing, QR code streaming, health probes, and outbound message dispatching.
+ */
+
 require("dotenv").config();
 
 const express = require("express");

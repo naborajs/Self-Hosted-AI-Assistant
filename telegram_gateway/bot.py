@@ -1,3 +1,15 @@
+"""Telegram bot gateway implementation for Project EDITH v2.0.
+
+This module provides the `TelegramGateway` service:
+- Fault-Tolerant Lifespan: Validates and initializes the Telegram Application instance.
+  Invalid or placeholder tokens (`your-...`) and network handshake errors are caught
+  gracefully without terminating the host FastAPI lifespan.
+- Command Dispatch: Registers handlers for core commands (`/start`, `/models`, `/model`,
+  `/language`, `/style`, `/remember`, `/memories`, `/forget`, `/help`, `/confirm`, `/cancel`).
+- Turn Integration: Hands plain text messages directly to `execute_conversation_turn`
+  with platform tag `platform="telegram"`, maintaining user identity and memory continuity.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -27,6 +39,7 @@ logger = logging.getLogger("local_ai_assistant.telegram")
 
 
 class TelegramGateway:
+    """Gateway service coordinating Telegram Bot API polling and conversation processing."""
     def __init__(self, settings: Any, memory: Any, ai_manager: AIManager) -> None:
         self.settings = settings
         self.memory = memory

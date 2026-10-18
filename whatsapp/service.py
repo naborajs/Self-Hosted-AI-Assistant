@@ -1,3 +1,23 @@
+"""WhatsApp client gateway and durable messaging bridge orchestrator for Project EDITH v2.0.
+
+This module provides the `WhatsAppGateway` service:
+- Bridge Transport: Communicates via authenticated HTTP with the local Baileys Node.js sidecar.
+- Inbound Ingestion Pipeline:
+  - Continuously polls incoming messages from the bridge (`GET /api/messages`).
+  - Persists messages in SQLite via `save_inbound_batch` with strict deduplication on `(platform, external_id)`.
+  - Acknowledges received IDs back to the bridge (`POST /api/messages`).
+- Multi-Worker Concurrency with Chat-Level FIFO Serialization:
+  - Spawns a pool of worker tasks bounded by `inbox_workers` setting.
+  - Dynamically maintains an `active_chats` set ensuring messages for the same chat are never processed
+    concurrently, strictly preserving conversational turn order.
+- Durable Two-Phase Outbound Retries:
+  - Outbound assistant replies are staged as `OutboundMessage` records (`PENDING`).
+  - Outbound worker leases pending messages with exponential backoff retries.
+  - Distinguishes permanent errors (4xx) from transient errors (5xx/timeouts) and marks
+    uncertain dispatches as `AMBIGUOUS` instead of blindly duplicating messages.
+- Stale Lease Recovery: Periodically resets timed-out processing leases after worker or system crashes.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -44,8 +64,8 @@ from memory.store import get_memory_store
 logger = logging.getLogger("local_ai_assistant.whatsapp")
 
 
-
 class WhatsAppGateway:
+    """Gateway service coordinating WhatsApp Baileys sidecar bridge and message processing."""
     def __init__(self, settings: Any, ai_manager: AIManager) -> None:
         self.settings = settings
         self.ai_manager = ai_manager
