@@ -1,3 +1,11 @@
+"""Real-time weather reporting tool for Project EDITH v2.0.
+
+Queries the wttr.in weather forecast service:
+- Gated by `allow_external_network_tools` setting.
+- Location string sanitized and capped to 100 characters.
+- Fast, plain-text one-line response formatting.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +18,7 @@ logger = logging.getLogger("local_ai_assistant.tools.weather")
 
 
 def get_weather(location: str, app_settings: Any = None) -> str:
+    """Fetch current weather conditions for the specified geographic location."""
     cfg = app_settings or settings
     if not getattr(cfg, "allow_external_network_tools", False):
         return "Error: External network tools are disabled by default for privacy. An administrator can enable web search and weather lookups by setting ALLOW_EXTERNAL_NETWORK_TOOLS=true in configuration."

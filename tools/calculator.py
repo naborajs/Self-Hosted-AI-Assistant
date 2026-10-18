@@ -1,3 +1,13 @@
+"""Safe mathematical expression evaluation tool for Project EDITH v2.0.
+
+This tool safely evaluates arithmetic expressions using Python's Abstract Syntax Tree (AST):
+- Absolute ban on `eval()`, `exec()`, or dynamic code execution.
+- Whitelist of permissible operators: `+`, `-`, `*`, `/`, `%`, `**`, unary `-`.
+- String length bounded to `MAX_EXPRESSION_LENGTH` (256 characters).
+- DoS protection: Base values capped at 10,000 and exponents capped at 1,000 (`_safe_pow`).
+- Graceful handling of division-by-zero, syntax errors, and float representation overflows.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -9,6 +19,7 @@ MAX_BASE = 10000
 
 
 def _safe_pow(base: float | int, exp: float | int) -> float | int:
+    """Safe exponentiation enforcing strict base and exponent bounds."""
     if abs(base) > MAX_BASE or abs(exp) > MAX_EXPONENT:
         raise ValueError("Calculation rejected: base or exponent exceeds safety limit")
     return operator.pow(base, exp)
@@ -26,6 +37,7 @@ SAFE_OPERATORS = {
 
 
 def calculate_expression(expression: str) -> str:
+    """Safely parse and evaluate an arithmetic expression string."""
     if not expression or not isinstance(expression, str):
         return "Error: Expression must be a non-empty string."
     cleaned = expression.strip()

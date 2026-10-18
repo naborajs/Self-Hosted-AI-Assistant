@@ -1,3 +1,11 @@
+"""Privacy-first web search tool for Project EDITH v2.0.
+
+Queries DuckDuckGo's Instant Answer API without tracking:
+- Gated by `allow_external_network_tools` setting (disabled by default for air-gap privacy).
+- Query string sanitized and length-capped to 500 characters.
+- Strict network timeout enforcement (`tool_timeout_seconds`).
+"""
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +18,7 @@ logger = logging.getLogger("local_ai_assistant.tools.search")
 
 
 def search_web(query: str, app_settings: Any = None) -> str:
+    """Execute a web search query via DuckDuckGo Instant Answer API."""
     cfg = app_settings or settings
     if not getattr(cfg, "allow_external_network_tools", False):
         return "Error: External network tools are disabled by default for privacy. An administrator can enable web search and weather lookups by setting ALLOW_EXTERNAL_NETWORK_TOOLS=true in configuration."

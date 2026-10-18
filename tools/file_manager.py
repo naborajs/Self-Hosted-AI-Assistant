@@ -1,3 +1,17 @@
+"""Sandboxed file management tool with path traversal defense for Project EDITH v2.0.
+
+This module provides safe filesystem operations within an isolated workspace:
+- Strict Sandbox Boundary: All operations are strictly locked to `tool_workspace_root`
+  (defaults to `storage/workspace`). Resolves real paths and rejects symlink escapes.
+- Extension & Sensitive File Blacklist: Prohibits reading or writing executable, script,
+  configuration, or database files (`.py`, `.env`, `.db`, `.sqlite`, `.pem`, `.bat`, etc.).
+- Cross-Platform Hardware Device Defense: Blocks Windows DOS device names (`CON`, `PRN`,
+  `AUX`, `NUL`, `COM1-9`, `LPT1-9`) regardless of file extension or casing.
+- Bounded Payloads: Limits both reads and writes to `MAX_FILE_SIZE_BYTES` (100 KB).
+- Atomic File Writes: Writes to a co-located temporary file before renaming to prevent partial writes.
+- Host Path Sanitization: Strips real host absolute paths from error messages returned to users.
+"""
+
 from __future__ import annotations
 
 import contextlib

@@ -1,3 +1,19 @@
+"""User-scoped long-term memory store with deterministic lexical retrieval for Project EDITH v2.0.
+
+This module provides the `MemoryStore` abstraction:
+- User Isolation: All facts are strictly keyed and isolated by internal User ID.
+- Storage Normalization: Enforces slug formatting, lowercase folding, and character limits
+  via the repository layer.
+- Deterministic Lexical Ranking:
+  - Tokenizes queries into alphanumeric words, filtering out common conversational stop words.
+  - Matches tokens against memory keys (weight 4 for exact, 2 for substring), tags (weight 2),
+    and values (weight 1).
+  - Implements deterministic multi-level tie-breaking: `score DESC`, `updated_at DESC`, `key ASC`.
+- Context Window Protection: Caps retrieved memories to top 5 items and 600 total characters.
+- Zero External Dependencies: Eliminates complex vector databases or embeddings models in favor
+  of lightweight SQLite relational queries.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -23,6 +39,7 @@ STOP_WORDS = {
 
 @dataclass
 class MemoryStore:
+    """Manages user-scoped long-term memory records and keyword relevance ranking."""
     settings: Any
 
     async def initialize(self) -> None:
