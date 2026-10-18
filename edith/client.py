@@ -1,3 +1,12 @@
+"""HTTP client for communicating with EDITH FastAPI administrative endpoints in Project EDITH v2.0.
+
+Provides programmatic access for the CLI and administrative scripts:
+- Automatic JWT Bearer token authentication via `EDITH_ADMIN_TOKEN` or `authenticate()`.
+- Synchronous HTTP requests wrapped with custom domain exception hierarchies.
+- Structured abstractions for system overview, model configuration, user querying,
+  memory operations, tool inspection, and queue management.
+"""
+
 from __future__ import annotations
 
 import os

@@ -1,3 +1,5 @@
+"""CLI invocation module for running EDITH via `python -m edith`."""
+
 from __future__ import annotations
 
 import sys

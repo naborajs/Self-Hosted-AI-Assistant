@@ -1,3 +1,13 @@
+"""Rich terminal UI and tabular visual formatting for Project EDITH v2.0.
+
+Provides human-readable formatted output for the operator terminal:
+- Color-coded badges for service health and operational statuses.
+- Formatted tables for models, users, memory records, registered tools, and delivery queues.
+- Visual hierarchical trees for dependency health diagnostics.
+- Human-readable byte formatting (`format_bytes`).
+- Raw JSON emission mode for programmatic scripting and automation pipelines.
+"""
+
 from __future__ import annotations
 
 import json

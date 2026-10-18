@@ -1,3 +1,18 @@
+"""Operator terminal interface and management commands for Project EDITH v2.0.
+
+This module defines the Click command hierarchy for controlling EDITH from the terminal:
+- `edith status`: Display real-time system overview, daemon uptime, queues, and dependencies.
+- `edith doctor`: Comprehensive system diagnostic checking port bindings, SQLite WAL integrity,
+  Ollama inference reachability, and bridge connectivity (with offline DB fallback).
+- `edith config check`: Verify configuration settings, secret presence, and loopback bindings.
+- `edith models`: List installed Ollama models, display active defaults, and configure global defaults.
+- `edith users`: Paginated user registry audit with conversation counts and model preferences.
+- `edith memory`: User-scoped long-term memory inspection, querying, manual creation, and deletion.
+- `edith tools`: Tool inventory inspection, confirmation policy review, and schema validation.
+- `edith queue`: Inbound and outbound message queues inspection and manual dead-letter retry.
+- `edith integrations`: Real-time health probes for WhatsApp and Telegram gateways.
+"""
+
 from __future__ import annotations
 
 import json
