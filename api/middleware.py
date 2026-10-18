@@ -1,3 +1,8 @@
+"""HTTP middleware layer for request inspection and abuse mitigation in Project EDITH v2.0.
+
+Provides in-memory sliding-window request throttling based on client IP addresses.
+"""
+
 from __future__ import annotations
 
 import time
@@ -12,6 +17,10 @@ from config import settings
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
+    """In-memory sliding-window rate limiter per client IP.
+
+    Enforces maximum requests per 60-second window before emitting HTTP 429 Too Many Requests.
+    """
     def __init__(self, app: Callable, rate_limit: int = settings.rate_limit_per_minute) -> None:
         super().__init__(app)
         self.rate_limit = rate_limit

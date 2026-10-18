@@ -1,3 +1,20 @@
+"""FastAPI REST API router and endpoint implementations for Project EDITH v2.0.
+
+This module provides the complete machine-facing and administrative HTTP interface:
+- Public Health Probes: `/health` and `/api/health` for orchestrator liveness checks.
+- Machine Chat Endpoint: `/api/v1/chat` providing stateless and conversational dialogue
+  turns for external integrations, authenticated via `X-API-Key` or Bearer token.
+- Administrative Diagnostics & Observability:
+  - `/api/admin/overview`: System uptime, host platform, Ollama/bridge dependencies, and queue gauges.
+  - `/api/admin/users`: Paginated user audit with cryptographic privacy masking (`mask_identifier`).
+  - `/api/admin/tools`: Registered tool catalog, permission categories, and execution policies.
+  - `/api/admin/integrations`: Health status of WhatsApp, Telegram, and Ollama transports.
+  - `/api/admin/deliveries`: Diagnostic view of inbound and outbound queues with manual retry scheduling.
+- Model Management: `/api/models`, `/api/models/refresh`, and `/api/models/config` for runtime
+  discovery and admin default model selection without restarting processes.
+- Channel Administration: WhatsApp bridge pairing, status polling, and outbound message dispatch.
+"""
+
 import logging
 import secrets
 from datetime import datetime, timezone

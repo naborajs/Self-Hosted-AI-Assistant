@@ -1,3 +1,16 @@
+"""Authentication, authorization, and cryptographic token verification for Project EDITH v2.0.
+
+This module provides the core security mechanisms for human administrators and machine clients:
+- Administrator Authentication: Validates credentials against `ADMIN_PASSWORD_HASH` via bcrypt.
+  Strictly forbids using `SESSION_SECRET` as a login password.
+- JWT Access Tokens: Issues and verifies short-lived HS256 signed JSON Web Tokens for CLI
+  and dashboard administrative sessions.
+- Machine Client Authentication (`get_machine_client`):
+  - Authenticates external software via `X-API-Key` using timing-safe comparisons (`secrets.compare_digest`).
+  - Automatically isolates client data using full 256-bit SHA-256 digests (`client_<sha256>`).
+  - Gracefully maps legacy 8-character token identities to prevent orphaned data.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -22,6 +35,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plaintext password against a bcrypt-hashed password in constant time."""
     if not plain_password or not hashed_password:
         return False
     try:
