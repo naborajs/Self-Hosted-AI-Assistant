@@ -1,3 +1,19 @@
+"""Asynchronous database repository operations for Project EDITH v2.0.
+
+This module encapsulates all transactional database access and query logic:
+- User identity management, multi-platform resolution, and machine token migration.
+- Conversation thread lifecycle and historical message persistence.
+- Normalized user memory storage, validation, tag parsing, and retrieval.
+- Durable inbound queue ingestion, lease-based FIFO claiming, and crash recovery.
+- Durable outbound delivery state machine, retry scheduling, and dispatch leasing.
+- Hierarchical model resolution (user preference -> system setting -> environment default).
+- Two-phase human confirmation tokens for high-privilege tool execution.
+- Operational metrics, queue statistics, and paginated diagnostic inspections.
+
+All database transactions use the `get_session()` async context manager with WAL
+concurrency and automatic rollback on unhandled exceptions.
+"""
+
 import logging
 import re
 from datetime import datetime, timedelta
@@ -21,8 +37,18 @@ from .models import (
 )
 
 
-
 async def create_user(external_id: str, display_name: str, email: str | None = None, is_admin: bool = False) -> User:
+    """Create a new user account, rolling back gracefully if external_id already exists.
+
+    Args:
+        external_id: Unique platform identifier (phone, chat id, or SHA-256 client token hash).
+        display_name: Human-friendly display label.
+        email: Optional administrative contact email.
+        is_admin: True if granting administrative privileges.
+
+    Returns:
+        The newly persisted or pre-existing User model instance.
+    """
     async with get_session() as session:
         user = User(
             external_id=external_id,
@@ -45,18 +71,21 @@ async def create_user(external_id: str, display_name: str, email: str | None = N
 
 
 async def get_user_by_external_id(external_id: str) -> User | None:
+    """Look up a user record by their unique cross-platform external_id."""
     async with get_session() as session:
         result = await session.execute(select(User).where(User.external_id == external_id))
         return result.scalars().first()
 
 
 async def get_user_by_id(user_id: int) -> User | None:
+    """Look up a user record by internal integer primary key."""
     async with get_session() as session:
         result = await session.execute(select(User).where(User.id == user_id))
         return result.scalars().first()
 
 
 async def get_or_create_user(external_id: str, display_name: str, email: str | None = None) -> User:
+    """Idempotently fetch an existing user or create a new user profile."""
     user = await get_user_by_external_id(external_id)
     if user is not None:
         return user
@@ -90,6 +119,17 @@ async def resolve_machine_user(
 
 
 async def create_conversation(user_id: int, external_chat_id: str, title: str | None = None, conversation_metadata: str | None = None) -> Conversation:
+    """Create a new conversation thread, returning existing one if (user_id, external_chat_id) matches.
+
+    Args:
+        user_id: Owning User's internal ID.
+        external_chat_id: External channel chat or thread identifier.
+        title: Optional human-readable conversation topic.
+        conversation_metadata: Optional JSON serialized context dictionary.
+
+    Returns:
+        The newly created or existing Conversation model instance.
+    """
     async with get_session() as session:
         conversation = Conversation(
             user_id=user_id,
@@ -118,6 +158,7 @@ async def create_conversation(user_id: int, external_chat_id: str, title: str | 
 
 
 async def get_conversation(user_id: int, external_chat_id: str) -> Conversation | None:
+    """Retrieve an active conversation thread by user and external chat ID."""
     async with get_session() as session:
         result = await session.execute(
             select(Conversation).where(
@@ -129,6 +170,18 @@ async def get_conversation(user_id: int, external_chat_id: str) -> Conversation 
 
 
 async def save_message(conversation_id: int, sender: str, role: str, content: str, message_type: str = "text") -> Message:
+    """Persist an individual message within a conversation thread.
+
+    Args:
+        conversation_id: Parent conversation ID.
+        sender: Sender identifier (user external_id or 'assistant').
+        role: Dialogue role ('user', 'assistant', 'system', 'tool').
+        content: Text content of the message.
+        message_type: Message format type ('text', 'image', etc.).
+
+    Returns:
+        The newly persisted Message model instance.
+    """
     async with get_session() as session:
         message = Message(
             conversation_id=conversation_id,
@@ -144,6 +197,10 @@ async def save_message(conversation_id: int, sender: str, role: str, content: st
 
 
 async def list_messages(conversation_id: int, limit: int = 100) -> list[Message]:
+    """Retrieve chronologically ordered message history for a conversation thread.
+
+    Fetches the most recent `limit` messages in ascending chronological order.
+    """
     async with get_session() as session:
         result = await session.execute(
             select(Message)

@@ -1,3 +1,15 @@
+"""Project EDITH v2.0 — Asynchronous Database Engine & Session Management.
+
+Manages the SQLAlchemy asynchronous engine and session factory for SQLite.
+Key architectural capabilities:
+1. SQLite WAL Mode (`PRAGMA journal_mode = WAL`): Enables concurrent non-blocking
+   reads while worker transactions write inbound/outbound records.
+2. Pragmas on Connect: Automatically enforces `PRAGMA foreign_keys = ON` for cascade
+   integrity and sets `PRAGMA busy_timeout = 5000` to prevent locked database exceptions.
+3. Declarative Schema Migration: Executes `Base.metadata.create_all` during initialization
+   to ensure all tables and indexes are present without manual migrations.
+4. Clean Disposal: Supports async engine disposal via `shutdown_db()` during application teardown.
+"""
 from __future__ import annotations
 
 import logging
@@ -17,6 +29,11 @@ async_session: sessionmaker | None = None
 
 
 async def init_db(settings) -> None:
+    """Initialize the asynchronous database engine, pragmas, and schema tables.
+
+    Args:
+        settings: Application settings instance containing `database_url`.
+    """
     global engine, async_session
     if engine is None:
         db_url = str(settings.database_url)
@@ -52,6 +69,7 @@ async def init_db(settings) -> None:
 
 
 async def shutdown_db() -> None:
+    """Gracefully dispose of the database engine and reset session factories."""
     global engine, async_session
     if engine is not None:
         await engine.dispose()
@@ -61,6 +79,14 @@ async def shutdown_db() -> None:
 
 
 def get_session() -> AsyncSession:
+    """Create a new asynchronous database session context.
+
+    Returns:
+        AsyncSession: An active SQLAlchemy async session.
+
+    Raises:
+        RuntimeError: If called before `init_db()` has successfully initialized.
+    """
     if async_session is None:
         raise RuntimeError("Database session factory is not initialized")
     return async_session()
