@@ -98,38 +98,34 @@ pip install -e .
 edith doctor       # Diagnostic sanity check
 edith status       # Operational overview
 ```
-
 ## WhatsApp Setup
 
-Follow the detailed guide in [WHATSAPP_SETUP.md](./WHATSAPP_SETUP.md).
+Follow the complete step-by-step pairing and durable queuing guide in [WHATSAPP_SETUP.md](./WHATSAPP_SETUP.md) and [docs/whatsapp_integration.md](./docs/whatsapp_integration.md).
 
 ## Telegram Setup
 
-Follow the detailed guide in [TELEGRAM_SETUP.md](./TELEGRAM_SETUP.md).
+Configure `TELEGRAM_BOT_TOKEN` in `.env` obtained from @BotFather. The Telegram gateway initializes asynchronously during startup and routes messages through the unified 8-stage conversation turn processor. If no token or a placeholder token is configured, the gateway gracefully skips polling without failing the application lifespan.
 
-## Ollama Setup
+## Ollama Inference Engine
 
-Follow the detailed guide in [OLLAMA_SETUP.md](./OLLAMA_SETUP.md).
+Inspect models currently installed on your local host using `ollama list`. Enter your chosen model in `.env` under `OLLAMA_MODEL` (e.g. `dolphin3:8b`, `gemma4:12b`, `llama3:8b`). EDITH strictly enforces a **zero auto-pull policy** and will never download models automatically in the background.
 
-## AI Customization
+## Controlled Tool Execution
 
-See [CUSTOMIZATION_GUIDE.md](./CUSTOMIZATION_GUIDE.md) and [PERSONALITIES.md](./PERSONALITIES.md).
+Tools are registered in `ai/tools.py` with strict permission classification (`READ_ONLY`, `NETWORK`, `CONFIRMATION_REQUIRED`).
+- High-privilege tools (like filesystem write operations) stage a `PendingAction` in the database with a high-entropy hex confirmation token.
+- Users must authorize the action by sending `/confirm <token>` within 120 seconds.
+- Sandboxed file operations are strictly confined within `storage/workspace/` with path traversal defense.
 
-## Knowledge Base
+## Documentation Index
 
-See [KNOWLEDGE_BASE.md](./KNOWLEDGE_BASE.md).
-
-## Admin API
-
-See [ADMIN_API.md](./ADMIN_API.md).
-
-## Docker
-
-See [DOCKER_GUIDE.md](./DOCKER_GUIDE.md).
-
-## Troubleshooting
-
-See [TROUBLESHOOTING.md](./TROUBLESHOOTING.md).
+- [Architecture Guide](./docs/architecture.md) — Unified 8-stage turn pipeline, persistence layer, and security boundaries.
+- [Configuration Reference](./docs/configuration.md) & [CONFIGURATION.md](./CONFIGURATION.md) — Comprehensive environment variable table and security best practices.
+- [Installation Guide](./docs/installation.md) & [INSTALLATION.md](./INSTALLATION.md) — Prerequisites, virtual environments, and setup steps.
+- [Local Deployment & Operations Guide](./docs/deployment.md) — Process supervisors, Windows batch scripts, and production hardening.
+- [Startup & Migration Summary](./STARTUP_GUIDE.md) — Quick startup commands and pipeline details.
+- [Troubleshooting & Diagnostics Guide](./docs/troubleshooting.md) — Automated `edith doctor` checks and resolutions for common issues.
+- [WhatsApp Integration Guide](./docs/whatsapp_integration.md) — Baileys sidecar bridge architecture, QR display, and endpoints.
 
 ## License
 
